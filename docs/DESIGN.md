@@ -29,7 +29,7 @@ bubbles, and namespaces, workloads and nodes become the groupings.
 
 **Architecture.** Add a second data source behind the existing views.
 `piddle-core` already keeps collection separate from display, so the plan is:
-- A new crate, `piddle-k8s`, that produces a snapshot shaped like PIDdle's:
+- A new crate, `kpiddle-core`, that produces a snapshot shaped like PIDdle's:
   `Vec<Item>` with id, parent, name, group keys, CPU, memory and status.
 - Generalize the views slightly so a "process" can be any item with those
   fields; don't fork them.
@@ -40,24 +40,46 @@ bubbles, and namespaces, workloads and nodes become the groupings.
   updates are cheap.
 - Poll `metrics.k8s.io/v1beta1` PodMetrics every 5–15 s. metrics-server
   refreshes at about 15 s anyway, so faster polling buys nothing.
-- Without metrics-server, show the bubbles with requests/limits as sizes and
-  gray "no metrics" coloring. Don't fail.
+- Without metrics-server, don't fail, and don't silently swap usage for
+  requests: that would change what the picture means. Offer an explicit,
+  clearly labeled **Requests/limits mode** instead. A banner in the header
+  says the bubbles show requested resources, and CPU color is gray. The same
+  mode is selectable when metrics are available, for capacity planning.
 - Read the context from kubeconfig, with `--context` and `--namespace` flags
   like kubectl.
 
 **Encoding.**
-- Size is memory working set. An optional ring shows the memory limit.
+- Size is memory working set. An optional ring shows the memory limit, so
+  you see usage inside its limit.
 - Color is CPU cores used (same blue→red scale). An optional mode colors by
-  usage ÷ limit.
+  usage ÷ request or ÷ limit.
+- Requests and limits get their own visual treatment. Two cues stand out:
+  - a bubble nearly filling its ring (close to OOM), and
+  - a bubble far smaller than its request (over-provisioned).
+- CPU throttling is shown when that telemetry is available
+  (`container_cpu_cfs_throttled_*` via the kubelet's cAdvisor endpoint).
 - Status overlays: Pending (hollow), CrashLoopBackOff (pulsing red outline),
   OOMKilled recently (badge), restart count shown in the details.
 
-**Details panel.** Pod spec summary, containers with images, requests/limits,
-node, IP, owner chain, recent events, restart history and last termination
-reason.
+**Scale.**
+- Default to one aggregate bubble per workload (Deployment, StatefulSet and
+  so on). Its size and color are the sum of its pods.
+- Clicking a workload expands it into its pods.
+- A thousand individual pod bubbles would drown the signal. This matches the
+  group hulls PIDdle already draws in the by-app view.
+
+**Details panel.**
+- Pod spec summary, containers with images, requests/limits, node, IP, owner
+  chain, recent events, restart history and last termination reason.
+- Logs: the tail of container logs (`pods/log`, follow mode), sanitized. This
+  is the same pane as PIDdle's journald logs (see `docs/ROADMAP.md`).
 
 **Actions, replacing terminate/kill, with the same safety tiers:**
-- Delete pod. The controller recreates it, which acts as a "restart".
+- **Evict pod** (the default "restart"). This uses the eviction API, so
+  PodDisruptionBudgets are respected, and the controller recreates the pod.
+  A PDB refusal (429) is shown as such, not retried.
+- **Delete pod.** A separate, explicit choice that bypasses PDBs. It is always
+  in the critical tier: type the name to confirm.
 - `kubectl rollout restart` for the owning workload.
 - Scale the workload (later, maybe).
 - Blocked: nothing here, since RBAC is the real gate. Surface 403s clearly.
@@ -65,8 +87,6 @@ reason.
   components, pods with no controller (deleting a bare pod is permanent), and
   StatefulSet pods.
 - Normal: a confirmation that defaults to No.
-- Respect PodDisruptionBudgets by using the eviction API instead of a raw
-  delete where possible.
 
 **Security.**
 - Read-only by default; actions need an explicit `--allow-actions` or a
@@ -99,11 +119,12 @@ crates/
 - If the shared crate settles and the apps drift apart, kpiddle can move to
   its own repo later; git keeps the history.
 
-**Step 0** (useful even if kpiddle never ships): move the layout, physics,
-encoding and shared widgets out of piddle-gui/piddle-tui into `piddle-view`.
-The views should then accept a generic item (id, parent, name, group keys,
-cpu, mem, status) rather than `ProcInfo`. The same abstraction serves the
-network version (see `docs/piddle-net/DESIGN.md` on that branch).
+**Extract as needed, not up front.** Build kpiddle's first working screen
+and move code into `piddle-view` only when kpiddle actually needs it. A
+second real consumer shows what the shared abstraction should be, which is
+better than guessing in advance. The result is a views layer that takes a
+generic item (id, parent, name, group keys, cpu, mem, status) rather than
+`ProcInfo`. piddle-net then builds on that abstraction.
 
 ## Open questions
 
