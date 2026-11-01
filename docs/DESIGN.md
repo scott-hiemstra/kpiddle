@@ -48,6 +48,37 @@ bubbles, and namespaces, workloads and nodes become the groupings.
 - Read the context from kubeconfig, with `--context` and `--namespace` flags
   like kubectl.
 
+**Missing or stale metrics never look like zero.** If an unavailable metrics
+source rendered as 0%, a busy cluster would look reassuringly idle. Every
+pod's usage is one of three states:
+- **fresh:** a PodMetrics sample within about 2× the scrape interval
+  (≤ ~60 s old);
+- **stale:** a sample exists but is older than that;
+- **missing:** no sample, because the pod is new, metrics-server is down or
+  slow, or the pod is excluded.
+
+How each state is shown:
+- **Pods.**
+  - Missing usage shows as `—`, never `0`, and the bubble is hollow and gray.
+  - Stale values are dimmed and carry their age ("2m old").
+  - Sizes for missing pods come from nothing: the bubble keeps a fixed
+    minimal size, rather than borrowing requests outside the explicit
+    requests mode.
+- **Totals (namespace, workload, node, cluster).**
+  - Missing members are never summed as 0.
+  - A total with unmeasured members is marked partial with its coverage,
+    e.g. `≥ 3.2 cores · 7/10 pods measured`.
+  - A total with no measured members shows `—`.
+  - A total with stale members is marked stale.
+- **Sorting.** Unmeasured items don't sort as idle. They go in their own
+  bucket after measured ones, labeled as such.
+- **Header.** The metrics source state is always visible: *metrics OK*, *stale
+  since 14:02*, or *metrics unavailable* (with the reason, e.g. no
+  metrics.k8s.io API or forbidden).
+- **Cluster-wide outage.** When every pod is missing, kpiddle suggests the
+  labeled requests/limits mode instead of showing a field of gray. It doesn't
+  switch modes silently.
+
 **Encoding.**
 - Size is memory working set. An optional ring shows the memory limit, so
   you see usage inside its limit.
@@ -141,5 +172,14 @@ A TUI-only `kpiddle` (or `piddle --k8s`) that:
 - groups them by namespace and workload,
 - shows a details popup,
 - performs no actions.
+
+Acceptance criteria, tested against a fake metrics source, so the sampling
+and display logic can be checked without a cluster:
+- all metrics missing: every pod and total shows `—`, the header says
+  unavailable, and nothing reads 0%;
+- partial: totals are marked partial with their coverage, and unmeasured
+  pods sort after measured ones;
+- stale: values carry their age and the header says stale since when;
+- recovery: when fresh samples return, the stale and partial marks clear.
 
 The GUI bubbles come next, then actions with the safety tiers.
