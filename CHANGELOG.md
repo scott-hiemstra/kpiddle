@@ -29,3 +29,9 @@ CPU and memory, in the PIDdle style.
 - `--context` and `--namespace` like kubectl; all namespaces by default.
 - `--once` prints a plain listing for scripts.
 - Pod names, images, reasons and API errors are sanitized before display.
+- `kpiddle-gui`, a first graphical interface (GTK 4, build from source; not
+  in the release tarballs yet): pods as bubbles sized by memory and colored
+  by CPU, grouped by workload, namespace or node, with search and a hover
+  card. Pods without a usage sample are hollow gray rings, stale ones are
+  dimmed, pods in trouble get a red outline, and group labels carry `≥`
+  and coverage like the terminal view. It shares PIDdle's bubble engine.
