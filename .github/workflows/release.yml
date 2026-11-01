@@ -1,0 +1,122 @@
+name: Release kpiddle
+
+# Push a tag like kpiddle-v0.1.0 to build static kpiddle binaries for x86_64
+# and aarch64 and publish them as a GitHub release. kpiddle is versioned
+# separately from PIDdle: the version is in crates/kpiddle-tui/Cargo.toml and
+# the notes in docs/kpiddle/CHANGELOG.md. (PIDdle's release workflow matches
+# only v* tags, so the two never trigger each other.)
+# Run it manually to build the tarballs as workflow artifacts without
+# publishing anything.
+on:
+  push:
+    tags: ['kpiddle-v*']
+  workflow_dispatch:
+
+# Every action is pinned to a full commit SHA (version in the comment) so a
+# moved tag can't change what builds the release; Dependabot proposes updates.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Static binary (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check tag matches kpiddle's version and has release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/kpiddle-tui/Cargo.toml | head -1)
+          if [ "$GITHUB_REF_NAME" != "kpiddle-v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match crates/kpiddle-tui version $version"
+            exit 1
+          fi
+          packaging/release-notes.sh "$version" docs/kpiddle/CHANGELOG.md > /dev/null || {
+            echo "::error::docs/kpiddle/CHANGELOG.md needs a dated section for $version"
+            exit 1
+          }
+
+      # ring (TLS for kube-rs) compiles C, which needs musl-gcc for the
+      # static build. No GTK: nothing in kpiddle links it.
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+          targets: ${{ matrix.arch }}-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: kpiddle-${{ matrix.arch }}
+
+      - name: Test
+        run: cargo test --locked -p kpiddle-core -p kpiddle-tui -p piddle-view
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.arch }}-unknown-linux-musl -p kpiddle-tui
+
+      - name: Package
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/kpiddle-tui/Cargo.toml | head -1)
+          bin=target/${{ matrix.arch }}-unknown-linux-musl/release/kpiddle
+          if ldd "$bin" 2>/dev/null | grep -q '=>'; then
+            echo "::error::kpiddle is not statically linked"; ldd "$bin"; exit 1
+          fi
+          name=kpiddle-$version-${{ matrix.arch }}-linux
+          mkdir -p "dist/$name"
+          install -m755 "$bin" "dist/$name/kpiddle"
+          install -m644 LICENSE "dist/$name/LICENSE"
+          install -m644 docs/kpiddle/CHANGELOG.md "dist/$name/CHANGELOG.md"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kpiddle-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: kpiddle-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          version=${GITHUB_REF_NAME#kpiddle-v}
+          packaging/release-notes.sh "$version" docs/kpiddle/CHANGELOG.md > notes.md
+          # Not "latest": the README's download link is for PIDdle's packages.
+          # No --generate-notes: its compare link would span PIDdle's tags.
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "kpiddle $version" \
+            --notes-file notes.md \
+            --latest=false \
+            dist/*.tar.gz dist/*.sha256

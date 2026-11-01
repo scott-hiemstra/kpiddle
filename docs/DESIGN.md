@@ -1,6 +1,8 @@
 # kpiddle: PIDdle for Kubernetes
 
-Status: design only, no code yet (2026-10-31).
+Status: the first milestone (read-only TUI) is implemented as kpiddle 0.1.0 (2026-11-01).
+The sections below are the original design; the code follows it except where noted in
+[CHANGELOG.md](CHANGELOG.md).
 Parent project: [PIDdle](https://github.com/scott-hiemstra/piddle), v0.3.2 at the time of writing.
 
 ## The pitch
