@@ -3,7 +3,7 @@
 Notable changes in each kpiddle release. The section for a version is
 published as its release notes, and a release fails if it is missing.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-01
 
 First release: a terminal view of a Kubernetes cluster's pods by CPU and
 memory, in the PIDdle style. It only reads unless started with
