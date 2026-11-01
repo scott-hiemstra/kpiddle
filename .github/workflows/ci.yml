@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Every action is pinned to a full commit SHA (version in the comment) so a
+# moved tag can't change what builds the release; Dependabot proposes updates.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Format, lint, test, build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 24.04 ships GTK 4.14, the minimum kpiddle-gui supports.
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # musl-tools: ring (TLS for kube-rs) compiles C for the static build.
+      - name: Install GTK 4 development files and musl-gcc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev musl-tools
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: ${{ matrix.arch }}-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.arch }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Release build
+        run: cargo build --release --locked
+
+      - name: Static terminal UI (musl)
+        run: cargo build --release --locked --target ${{ matrix.arch }}-unknown-linux-musl -p kpiddle-tui
+
+      - name: Terminal UI links no GTK
+        run: |
+          b=target/release/kpiddle
+          if ldd "$b" | grep -Eq 'gtk|cairo|pango|glib'; then
+            echo "::error::$b links GUI libraries"; ldd "$b"; exit 1
+          fi
+          s=target/${{ matrix.arch }}-unknown-linux-musl/release/kpiddle
+          if ldd "$s" 2>/dev/null | grep -q '=>'; then
+            echo "::error::$s is not statically linked"; ldd "$s"; exit 1
+          fi

@@ -1,8 +1,14 @@
 # kpiddle: PIDdle for Kubernetes
 
-Status: the first milestone (read-only TUI) is implemented as kpiddle 0.1.0 (2026-11-01).
-The sections below are the original design; the code follows it except where noted in
-[CHANGELOG.md](CHANGELOG.md).
+Status: the read-only TUI and a first GUI are implemented as kpiddle 0.1.0
+(unreleased). The sections below are the original design; the code follows it
+except where noted in [CHANGELOG.md](../CHANGELOG.md).
+
+Update, 2026-11-01: kpiddle has since moved to its own repo, as anticipated
+below. The shared view code that the design calls `piddle-view` is now the
+[piddle-common](https://github.com/scott-hiemstra/piddle-common) crates
+(`piddle-encode`, `piddle-scene`, `piddle-gtk`), and kpiddle's tags are
+plain `vX.Y.Z`.
 Parent project: [PIDdle](https://github.com/scott-hiemstra/piddle), v0.3.2 at the time of writing.
 
 ## The pitch

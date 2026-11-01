@@ -1,5 +1,5 @@
 //! Pods as bubbles: what each bubble is, how pods group in each layout,
-//! search, and rendering. The layout simulation is `piddle_view::scene`,
+//! search, and rendering. The layout simulation is `piddle_scene`,
 //! shared with PIDdle.
 //!
 //! Size is the memory working set and color is CPU, where 1000m (one full
@@ -11,12 +11,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gtk::prelude::*;
-use gtk::{gdk, graphene, gsk, pango};
+use gtk::{gsk, pango};
 
 use kpiddle_core::model::{Measurement, Phase, PodView, Snapshot, Total};
-use piddle_view::encode::{MIN_RADIUS, Rgb, cpu_color, mem_radius};
-pub use piddle_view::scene::Motion;
-use piddle_view::scene::{Arrangement, GroupSpec, Item, Scene};
+use piddle_encode::{MIN_RADIUS, Rgb, cpu_color, mem_radius, mix};
+use piddle_gtk::Paint;
+use piddle_gtk::draw::{card, font, glib_escape, layout, point, rect, rgb, rgba, ring, text};
+pub use piddle_scene::Motion;
+use piddle_scene::{Arrangement, GroupSpec, Item, Scene};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
@@ -112,7 +114,7 @@ impl Item for PodItem {
     }
 }
 
-pub type Bubble = piddle_view::scene::Bubble<PodItem>;
+pub type Bubble = piddle_scene::Bubble<PodItem>;
 
 pub struct View {
     pub scene: Scene<PodItem>,
@@ -500,61 +502,12 @@ fn draw_label(snap: &gtk::Snapshot, pctx: &pango::Context, b: &mut Bubble, sx: f
 
 // Drawing helpers, as in piddle-gui's view.
 
-fn layout(pctx: &pango::Context, s: &str, px: f64, bold: bool) -> pango::Layout {
-    let l = pango::Layout::new(pctx);
-    l.set_font_description(Some(&font(px, bold)));
-    l.set_text(s);
-    l
-}
+impl Paint for View {
+    fn resize(&mut self, width: f64, height: f64) {
+        self.scene.size = (width, height);
+    }
 
-fn text(snap: &gtk::Snapshot, l: &pango::Layout, x: f64, y: f64, color: gdk::RGBA) {
-    snap.save();
-    snap.translate(&point(x.round(), y.round()));
-    snap.append_layout(l, &color);
-    snap.restore();
-}
-
-fn ring(snap: &gtk::Snapshot, cx: f64, cy: f64, r: f64, width: f64, color: gdk::RGBA) {
-    let rr = gsk::RoundedRect::from_rect(rect(cx - r, cy - r, r * 2.0, r * 2.0), r as f32);
-    snap.append_border(&rr, &[width as f32; 4], &[color; 4]);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn card(snap: &gtk::Snapshot, x: f64, y: f64, w: f64, h: f64, radius: f64, fill: gdk::RGBA, border: gdk::RGBA) {
-    let b = rect(x, y, w, h);
-    let rr = gsk::RoundedRect::from_rect(b, radius as f32);
-    snap.push_rounded_clip(&rr);
-    snap.append_color(&fill, &b);
-    snap.pop();
-    snap.append_border(&rr, &[1.0; 4], &[border; 4]);
-}
-
-fn rect(x: f64, y: f64, w: f64, h: f64) -> graphene::Rect {
-    graphene::Rect::new(x as f32, y as f32, w as f32, h as f32)
-}
-
-fn point(x: f64, y: f64) -> graphene::Point {
-    graphene::Point::new(x as f32, y as f32)
-}
-
-fn rgba(r: f64, g: f64, b: f64, a: f64) -> gdk::RGBA {
-    gdk::RGBA::new(r as f32, g as f32, b as f32, a.clamp(0.0, 1.0) as f32)
-}
-
-fn rgb(r: f64, g: f64, b: f64) -> gdk::RGBA {
-    rgba(r, g, b, 1.0)
-}
-
-fn font(px: f64, bold: bool) -> pango::FontDescription {
-    let mut fd = pango::FontDescription::from_string(if bold { "Sans Bold" } else { "Sans" });
-    fd.set_absolute_size(px * pango::SCALE as f64);
-    fd
-}
-
-fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
-    Rgb(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t)
-}
-
-pub fn glib_escape(s: &str) -> String {
-    gtk::glib::markup_escape_text(s).to_string()
+    fn paint(&mut self, snapshot: &gtk::Snapshot, pctx: &pango::Context) {
+        self.render(snapshot, pctx);
+    }
 }

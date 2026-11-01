@@ -1,15 +1,13 @@
-name: Release kpiddle
+name: Release
 
-# Push a tag like kpiddle-v0.1.0 to build static kpiddle binaries for x86_64
-# and aarch64 and publish them as a GitHub release. kpiddle is versioned
-# separately from PIDdle: the version is in crates/kpiddle-tui/Cargo.toml and
-# the notes in docs/kpiddle/CHANGELOG.md. (PIDdle's release workflow matches
-# only v* tags, so the two never trigger each other.)
+# Push a tag like v0.1.0 to build static kpiddle binaries for x86_64 and
+# aarch64 and publish them as a GitHub release. The version is in
+# crates/kpiddle-tui/Cargo.toml and the notes in CHANGELOG.md.
 # Run it manually to build the tarballs as workflow artifacts without
 # publishing anything.
 on:
   push:
-    tags: ['kpiddle-v*']
+    tags: ['v*']
   workflow_dispatch:
 
 # Every action is pinned to a full commit SHA (version in the comment) so a
@@ -35,12 +33,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/kpiddle-tui/Cargo.toml | head -1)
-          if [ "$GITHUB_REF_NAME" != "kpiddle-v$version" ]; then
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match crates/kpiddle-tui version $version"
             exit 1
           fi
-          packaging/release-notes.sh "$version" docs/kpiddle/CHANGELOG.md > /dev/null || {
-            echo "::error::docs/kpiddle/CHANGELOG.md needs a dated section for $version"
+          scripts/release-notes.sh "$version" > /dev/null || {
+            echo "::error::CHANGELOG.md needs a dated section for $version"
             exit 1
           }
 
@@ -58,10 +56,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: kpiddle-${{ matrix.arch }}
+          key: release-${{ matrix.arch }}
 
       - name: Test
-        run: cargo test --locked -p kpiddle-core -p kpiddle-tui -p piddle-view
+        run: cargo test --locked -p kpiddle-core -p kpiddle-tui
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.arch }}-unknown-linux-musl -p kpiddle-tui
@@ -77,7 +75,7 @@ jobs:
           mkdir -p "dist/$name"
           install -m755 "$bin" "dist/$name/kpiddle"
           install -m644 LICENSE "dist/$name/LICENSE"
-          install -m644 docs/kpiddle/CHANGELOG.md "dist/$name/CHANGELOG.md"
+          install -m644 CHANGELOG.md "dist/$name/CHANGELOG.md"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
 
@@ -110,13 +108,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -la dist
-          version=${GITHUB_REF_NAME#kpiddle-v}
-          packaging/release-notes.sh "$version" docs/kpiddle/CHANGELOG.md > notes.md
-          # Not "latest": the README's download link is for PIDdle's packages.
-          # No --generate-notes: its compare link would span PIDdle's tags.
+          version=${GITHUB_REF_NAME#v}
+          scripts/release-notes.sh "$version" > notes.md
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "kpiddle $version" \
             --notes-file notes.md \
-            --latest=false \
             dist/*.tar.gz dist/*.sha256

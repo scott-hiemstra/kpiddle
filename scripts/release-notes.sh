@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Print the CHANGELOG.md section for a version, for use as release notes,
+# with hard-wrapped lines joined.
+# Fails if the section is missing, empty, or still marked Unreleased, so a
+# release can't go out without notes.
+#   scripts/release-notes.sh 0.1.0 > notes.md
+set -euo pipefail
+version=${1:?usage: release-notes.sh VERSION}
+changelog="$(dirname "$0")/../CHANGELOG.md"
+
+heading=$(grep -m1 -F "## [$version]" "$changelog" || true)
+if [ -z "$heading" ]; then
+  echo "error: CHANGELOG.md has no section for $version" >&2
+  exit 1
+fi
+if [[ "$heading" == *Unreleased* ]]; then
+  echo "error: CHANGELOG.md section for $version is still marked Unreleased; set the release date" >&2
+  exit 1
+fi
+# Body: lines after the heading, up to the next version heading or link list.
+notes=$(awk -v h="$heading" '
+  $0 == h { on = 1; next }
+  on && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+  on { print }
+' "$changelog" | sed -e '/./,$!d' | sed -e ':a' -e '/^\n*$/{$d;N;ba' -e '}')
+if [ -z "${notes//[[:space:]]/}" ]; then
+  echo "error: CHANGELOG.md section for $version is empty" >&2
+  exit 1
+fi
+# GitHub renders every newline in release notes as a line break, so join
+# hard-wrapped lines back into their paragraph or list item. Headings, list
+# items, blank lines and code blocks keep their own lines.
+printf '%s\n' "$notes" | awk '
+  function flush() { if (buf != "") print buf; buf = "" }
+  /^```/ { flush(); print; code = !code; next }
+  code { print; next }
+  /^[[:space:]]*$/ { flush(); print; next }
+  /^#/ || /^[[:space:]]*([-*+]|[0-9]+\.)[[:space:]]/ { flush(); buf = $0; next }
+  { line = $0; sub(/^[[:space:]]+/, "", line); buf = (buf == "") ? line : buf " " line }
+  END { flush() }
+'

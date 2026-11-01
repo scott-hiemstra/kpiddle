@@ -2,7 +2,6 @@
 //! sized by memory and colored by CPU, grouped by workload, namespace or
 //! node. Read-only.
 
-mod canvas;
 mod view;
 
 use std::cell::{Cell, RefCell};
@@ -13,10 +12,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 
-use canvas::Canvas;
 use kpiddle_core::model::{MetricsState, PodsState, Snapshot};
 use kpiddle_core::source::{self, Options, Source};
-use piddle_view::encode::fmt_clock;
+use piddle_encode::fmt_clock;
+use piddle_gtk::Canvas;
+use piddle_gtk::draw::glib_escape;
 use view::{Layout, Motion, View};
 
 const APP_ID: &str = "io.github.piddle.kpiddle";
@@ -207,8 +207,8 @@ fn build_ui(app: &gtk::Application, src: Rc<Source>) {
     let scope = src.namespace.as_ref().map_or("all namespaces".to_string(), |n| format!("namespace {n}"));
     context.set_markup(&format!(
         "<span alpha='60%'>context</span> <b>{}</b> <span alpha='60%'>· {}</span>",
-        view::glib_escape(&src.context),
-        view::glib_escape(&scope)
+        glib_escape(&src.context),
+        glib_escape(&scope)
     ));
     let metrics = gtk::Label::new(None);
     let totals = gtk::Label::new(None);
@@ -345,14 +345,13 @@ fn set_banner(metrics: &gtk::Label, totals: &gtk::Label, s: &Snapshot) {
     };
     let mut markup = format!(
         "<span alpha='60%'>metrics</span> <span foreground='{color}' weight='bold'>{}</span>",
-        view::glib_escape(&text)
+        glib_escape(&text)
     );
     match &s.pods_state {
         PodsState::Listing => markup.push_str(" <span alpha='60%'>· listing pods…</span>"),
-        PodsState::Failing { reason } => markup.push_str(&format!(
-            " <span foreground='#f05a5a'>· pod watch failing: {}</span>",
-            view::glib_escape(reason)
-        )),
+        PodsState::Failing { reason } => {
+            markup.push_str(&format!(" <span foreground='#f05a5a'>· pod watch failing: {}</span>", glib_escape(reason)))
+        }
         PodsState::Synced => {}
     }
     metrics.set_markup(&markup);
@@ -361,8 +360,8 @@ fn set_banner(metrics: &gtk::Label, totals: &gtk::Label, s: &Snapshot) {
     let mut t = format!(
         "{} pods · CPU <b>{}</b> · memory <b>{}</b>",
         s.pods.len(),
-        view::glib_escape(&c.cpu_text()),
-        view::glib_escape(&c.mem_text())
+        glib_escape(&c.cpu_text()),
+        glib_escape(&c.mem_text())
     );
     if let Some(cov) = c.coverage_text() {
         t.push_str(&format!(" · <span foreground='#f0a03c'>{cov}</span>"));

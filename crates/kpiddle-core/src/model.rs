@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use piddle_view::encode::{fmt_bytes, sanitize};
+use piddle_encode::{fmt_bytes, sanitize};
 
 /// A sample at most this old is fresh. metrics-server scrapes about every
 /// 15 s over a window of up to 30 s, so this is roughly two scrape cycles.

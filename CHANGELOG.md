@@ -1,7 +1,6 @@
 # kpiddle changelog
 
-Notable changes in each kpiddle release. kpiddle is versioned and tagged
-separately from PIDdle (`kpiddle-vX.Y.Z`); the section for a version is
+Notable changes in each kpiddle release. The section for a version is
 published as its release notes, and a release fails if it is missing.
 
 ## [0.1.0] - Unreleased

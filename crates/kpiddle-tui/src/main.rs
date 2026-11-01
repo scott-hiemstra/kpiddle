@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kpiddle_core::model::{MetricsState, PodsState};
 use kpiddle_core::source::{self, Options};
-use piddle_view::encode::fmt_clock;
+use piddle_encode::fmt_clock;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
 use app::App;

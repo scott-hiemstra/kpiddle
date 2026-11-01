@@ -5,7 +5,7 @@
 use std::time::{Duration, SystemTime};
 
 use kpiddle_core::model::{Measurement, MetricsState, PodView, PodsState, Resources, Total, fmt_age, fmt_cpu};
-use piddle_view::encode::{cpu_color, fmt_bytes};
+use piddle_encode::{cpu_color, fmt_bytes};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};

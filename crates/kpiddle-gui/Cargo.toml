@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 kpiddle-core = { path = "../kpiddle-core" }
-piddle-view = { path = "../piddle-view" }
+piddle-encode.workspace = true
+piddle-scene.workspace = true
+piddle-gtk.workspace = true
 gtk = { version = "0.11", package = "gtk4", features = ["v4_14"] }
 pangocairo = "0.22"

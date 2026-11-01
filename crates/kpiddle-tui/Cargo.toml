@@ -15,5 +15,5 @@ path = "src/main.rs"
 
 [dependencies]
 kpiddle-core = { path = "../kpiddle-core" }
-piddle-view = { path = "../piddle-view" }
+piddle-encode.workspace = true
 ratatui = "0.30.2"
