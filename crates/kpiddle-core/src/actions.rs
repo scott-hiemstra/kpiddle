@@ -117,11 +117,8 @@ pub fn assess(snap: &Snapshot, pv: &PodView, action: Action) -> Assessment {
             );
         }
         let n = snap.pods.iter().filter(|p| p.pod.namespace == pod.namespace && p.workload == workload).count();
-        let effect = format!(
-            "Replaces all {n} pod{} of {}, following its update strategy.",
-            if n == 1 { "" } else { "s" },
-            workload.describe()
-        );
+        let pods = if n == 1 { "the only pod".to_string() } else { format!("all {n} pods") };
+        let effect = format!("Replaces {pods} of {}, following its update strategy.", workload.describe());
         return Assessment { action, target, blocked: None, warnings, effect };
     }
 
@@ -362,7 +359,9 @@ mod tests {
         assert!(!a.is_critical() && a.blocked.is_none());
         assert!(a.effect.contains("all 2 pods of deployment/web"), "{}", a.effect);
 
-        assert!(assess_named(&s, "pg-0", Action::RolloutRestart).is_critical());
+        let pg = assess_named(&s, "pg-0", Action::RolloutRestart);
+        assert!(pg.is_critical());
+        assert!(pg.effect.contains("the only pod of statefulset/pg"), "{}", pg.effect);
         assert!(assess_named(&s, "lonely", Action::RolloutRestart).blocked.is_some());
         let job = assess_named(&s, "nightly-1", Action::RolloutRestart);
         assert!(job.blocked.as_deref().is_some_and(|b| b.contains("job/nightly-1")), "{:?}", job.blocked);

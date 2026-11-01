@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/scott-hiemstra/kpiddle/actions/workflows/ci.yml/badge.svg)](https://github.com/scott-hiemstra/kpiddle/actions/workflows/ci.yml)
 
-**kpiddle** is [PIDdle](https://github.com/scott-hiemstra/piddle) for a Kubernetes cluster: pods instead of processes, grouped by namespace and workload, with the same CPU colors (1000m, one full core, is red). Version 0.1.0 has a terminal interface (`kpiddle`) that can also evict, restart and delete pods when you ask it to, and a first, read-only graphical one (`kpiddle-gui`, built from source for now). See [docs/DESIGN.md](docs/DESIGN.md) for where it's going.
+**kpiddle** is [PIDdle](https://github.com/scott-hiemstra/piddle) for a Kubernetes cluster: pods instead of processes, grouped by namespace and workload, with the same CPU colors (1000m, one full core, is red). Version 0.1.0 has a terminal interface (`kpiddle`) that can also evict, restart and delete pods when you ask it to, and a graphical one (`kpiddle-gui`, built from source for now) where clicking a pod opens its details. See [docs/DESIGN.md](docs/DESIGN.md) for where it's going.
 
 ```sh
 kpiddle                          # current kubeconfig context, all namespaces
@@ -10,6 +10,7 @@ kpiddle --context prod -n shop   # like kubectl's --context and --namespace
 kpiddle --once                   # one plain listing, for scripts
 kpiddle --allow-actions          # also evict, restart and delete pods (each asks first)
 kpiddle-gui                      # pods as bubbles: size is memory, color is CPU
+kpiddle-gui --allow-actions      # click a pod, then evict, restart or delete it
 ```
 
 Usage comes from metrics.k8s.io, so the cluster needs [metrics-server](https://github.com/kubernetes-sigs/metrics-server). **Missing or stale metrics never look like zero usage:**
@@ -23,13 +24,13 @@ By default kpiddle only reads (pods, ReplicaSet and Job metadata, pod metrics), 
 
 ## Actions
 
-Started with `--allow-actions`, the terminal interface can change the cluster. The header then says **actions on**. Select a pod in the list or open its details, then:
+Started with `--allow-actions`, either interface can change the cluster, and its header says **actions on**. In the terminal, select a pod in the list or open its details, then press a key. In the GUI, click a pod and use the buttons in its details window: a refused action's button is disabled, and its tooltip says why.
 
-| Key | Action | Confirmation |
+| Key / button | Action | Confirmation |
 |---|---|---|
-| `e` | **Evict** the pod. The eviction API respects PodDisruptionBudgets, and the controller makes a replacement. This is the way to restart a pod. | yes/no, default no |
-| `r` | **Rollout restart** its Deployment, StatefulSet or DaemonSet, following the update strategy. | yes/no, default no |
-| `d` | **Delete** the pod, bypassing PodDisruptionBudgets. | always type the name |
+| `e` / Evict | **Evict** the pod. The eviction API respects PodDisruptionBudgets, and the controller makes a replacement. This is the way to restart a pod. | yes/no, default no |
+| `r` / Rollout restart | **Rollout restart** its Deployment, StatefulSet or DaemonSet, following the update strategy. | yes/no, default no |
+| `d` / Delete | **Delete** the pod, bypassing PodDisruptionBudgets. | always type the name |
 
 The pod or workload name must be typed for anything in `kube-system`, control-plane pods, pods with no controller (removing one is permanent) and StatefulSet pods. Static pods are refused: the kubelet runs them from a manifest, so removing one through the API doesn't stop it.
 

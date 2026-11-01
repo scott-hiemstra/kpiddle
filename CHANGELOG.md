@@ -3,6 +3,27 @@
 Notable changes in each kpiddle release. The section for a version is
 published as its release notes, and a release fails if it is missing.
 
+## [Unreleased]
+
+### Added
+- kpiddle-gui: click a pod to open its details window: status, CPU and
+  memory (with the sample's freshness, and memory against its limit when
+  every container sets one), restarts, age, the owner chain, node, IP, and
+  each container's image, requests, limits and restarts. The window follows
+  the pod by UID and says when it's gone.
+- kpiddle-gui `--allow-actions`: Evict, Rollout restart and Delete buttons
+  in the details window, with the TUI's safety rules. A refused action is
+  disabled with the reason, a risky one needs the name typed, and the rest
+  ask in a dialog that defaults to Cancel. Failures, such as a
+  PodDisruptionBudget refusal, are shown in the window and in a dialog. The
+  banner says whether actions are on.
+
+### Changed
+- A static pod's owner reads "a static pod, run by the kubelet on NODE"
+  instead of calling it a bare pod.
+- A rollout restart of a one-pod workload says "Replaces the only pod",
+  not "all 1 pod".
+
 ## [0.1.0] - 2026-11-01
 
 First release: a terminal view of a Kubernetes cluster's pods by CPU and

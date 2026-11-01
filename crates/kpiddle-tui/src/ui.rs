@@ -5,8 +5,8 @@
 use std::time::{Instant, SystemTime};
 
 use kpiddle_core::actions::Action;
-use kpiddle_core::model::{Measurement, MetricsState, PodView, PodsState, Resources, Total, fmt_age, fmt_cpu};
-use piddle_encode::{cpu_color, fmt_bytes};
+use kpiddle_core::model::{Measurement, MetricsState, PodView, PodsState, Total, fmt_age};
+use piddle_encode::cpu_color;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -422,11 +422,7 @@ fn draw_details(f: &mut Frame, app: &App, pal: &Palette) {
         .pod
         .created
         .map_or("—".to_string(), |c| format!("{} ago", fmt_age(now.duration_since(c).unwrap_or_default())));
-    let owner = match &p.pod.owner {
-        Some(direct) if *direct != p.workload => format!("{} (via {})", p.workload.describe(), direct.describe()),
-        Some(_) => p.workload.describe(),
-        None => "none (a bare pod: deleting it is permanent)".into(),
-    };
+    let owner = p.owner_text();
 
     let mut lines = vec![
         Line::from(vec![
@@ -460,9 +456,9 @@ fn draw_details(f: &mut Frame, app: &App, pal: &Palette) {
         ]));
         let mut l = vec![
             Span::raw("    requests "),
-            Span::raw(resources(&c.requests)),
+            Span::raw(c.requests.text()),
             Span::raw("   limits "),
-            Span::raw(resources(&c.limits)),
+            Span::raw(c.limits.text()),
         ];
         if c.restarts > 0 {
             l.push(Span::styled(format!("   restarts {}", c.restarts), Style::new().fg(pal.fix(WARN))));
@@ -547,15 +543,6 @@ fn draw_confirm(f: &mut Frame, app: &App, pal: &Palette) {
     f.render_widget(Clear, area);
     let title = if typed.is_some() { "Careful" } else { "Confirm" };
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(popup_block(title, red, pal)), area);
-}
-
-/// "100m CPU, 64.0 MiB" or "none".
-fn resources(r: &Resources) -> String {
-    let parts: Vec<String> = [r.cpu_millis.map(|m| format!("{} CPU", fmt_cpu(m))), r.mem_bytes.map(fmt_bytes)]
-        .into_iter()
-        .flatten()
-        .collect();
-    if parts.is_empty() { "none".into() } else { parts.join(", ") }
 }
 
 fn draw_help(f: &mut Frame, app: &App, pal: &Palette) {

@@ -1,7 +1,10 @@
 //! kpiddle graphical front end: a Kubernetes cluster's pods as bubbles,
 //! sized by memory and colored by CPU, grouped by workload, namespace or
-//! node. Read-only.
+//! node. Click a pod for its details. Read-only unless started with
+//! `--allow-actions`, which enables evict, rollout restart and delete in
+//! the details window.
 
+mod details;
 mod view;
 
 use std::cell::{Cell, RefCell};
@@ -22,19 +25,23 @@ use view::{Layout, Motion, View};
 const APP_ID: &str = "io.github.piddle.kpiddle";
 
 const HELP: &str = "\
-kpiddle-gui: Kubernetes pods as bubbles (read-only)
+kpiddle-gui: Kubernetes pods as bubbles
 
 Usage: kpiddle-gui [OPTIONS]
 
       --context NAME     kubeconfig context (default: the current one)
   -n, --namespace NAME   one namespace (default: all namespaces)
+      --allow-actions    allow evict, rollout restart and delete from a pod's
+                         details window (each one asks first; risky ones
+                         need the name typed)
       --snapshot FILE [workload|namespace|node|free] [query]
                          render once to a PNG and exit (needs a display)
   -h, --help             show this help
   -V, --version
 
 Size is memory, color is CPU (1000m, one full core, is red). Pods without a
-usage sample are hollow gray rings, never idle-looking bubbles.";
+usage sample are hollow gray rings, never idle-looking bubbles. Click a pod
+for its details.";
 
 /// How often the view is rebuilt from the latest data.
 const REFRESH: Duration = Duration::from_secs(1);
@@ -61,6 +68,39 @@ popover row:selected, popover row:hover { background: rgba(59,130,246,0.25); }
 .banner { background: #11141b; border-bottom: 1px solid rgba(255,255,255,0.06); padding: 6px 14px; }
 .banner label { font-size: 12.5px; }
 .legend { color: rgba(200,210,230,0.55); font-size: 11.5px; }
+tooltip, tooltip.background { background: #232834; color: #e6e9ef; }
+scrollbar, scrollbar trough { background: transparent; }
+scrollbar slider { background: rgba(255,255,255,0.18); min-width: 6px; min-height: 6px; border-radius: 3px; margin: 0; border: none; }
+window.details, .details { background: #0f1218; color: #e6e9ef; }
+.details headerbar { background: #0f1218; border-bottom: 1px solid rgba(255,255,255,0.05); }
+headerbar .title { font-weight: 800; letter-spacing: 0.5px; }
+.details-title { font-size: 21px; font-weight: 800; }
+.details-subtitle { color: rgba(200,210,230,0.65); }
+.pill { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.10); border-radius: 999px;
+  padding: 3px 10px; font-size: 11px; font-weight: 600; color: rgba(220,226,238,0.9); }
+.pill.pill-bad { background: rgba(240,90,90,0.14); border-color: rgba(240,90,90,0.45); color: #f6a3a3; }
+.details-card { background: #161a22; border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 12px 14px; }
+.card-label { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: rgba(158,173,204,0.9); }
+.card-sub { font-size: 11px; color: rgba(200,210,230,0.55); }
+.big-num { font-size: 22px; font-weight: 800; font-feature-settings: "tnum"; margin-top: 2px; }
+.info-key { color: rgba(200,210,230,0.55); }
+.info-val { color: #e6e9ef; }
+.cmdline-box { background: #0a0c11; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; }
+.containers { font-size: 12px; color: #c9d4e5; padding: 8px 10px; }
+.details-status { color: rgba(200,210,230,0.7); font-size: 12px; }
+.details-status.status-bad { color: #f6a3a3; }
+button.action { background: #1d222c; color: #e6e9ef; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px;
+  padding: 6px 16px; box-shadow: none; margin: 0; }
+button.action:hover { background: #272d3a; }
+button.action.destructive-action { background: #b3261e; border-color: #c9372d; color: #ffffff; }
+button.action.destructive-action:hover { background: #c9372d; }
+button.action:disabled { opacity: 0.4; }
+.risk-banner { background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.35); border-radius: 8px;
+  padding: 9px 12px; color: #f5c56b; }
+.confirm-heading { font-size: 16px; font-weight: 800; }
+.confirm-entry { background: #0a0c11; color: #e6e9ef; border: 1px solid rgba(255,255,255,0.15); border-radius: 7px; min-height: 30px; }
+.confirm-entry:focus-within { border-color: #c9372d; }
+.confirm-entry text placeholder { color: rgba(230,233,239,0.3); font-style: italic; }
 "#;
 
 struct Args {
@@ -77,6 +117,7 @@ fn parse_args() -> Result<Option<Args>, String> {
         match a.as_str() {
             "--context" => opts.context = Some(value("--context")?),
             "-n" | "--namespace" => opts.namespace = Some(value("--namespace")?),
+            "--allow-actions" => opts.allow_actions = true,
             "--snapshot" => {
                 let path = value("--snapshot")?;
                 let layout = match args.peek().and_then(|l| Layout::parse(l)) {
@@ -205,8 +246,14 @@ fn build_ui(app: &gtk::Application, src: Rc<Source>) {
     banner.add_css_class("banner");
     let context = gtk::Label::new(None);
     let scope = src.namespace.as_ref().map_or("all namespaces".to_string(), |n| format!("namespace {n}"));
+    // Say so when this window can change the cluster.
+    let mode = if src.actions_allowed() {
+        " <span foreground='#f0a03c' weight='bold'>· actions on</span>"
+    } else {
+        " <span alpha='60%'>· read-only</span>"
+    };
     context.set_markup(&format!(
-        "<span alpha='60%'>context</span> <b>{}</b> <span alpha='60%'>· {}</span>",
+        "<span alpha='60%'>context</span> <b>{}</b> <span alpha='60%'>· {}</span>{mode}",
         glib_escape(&src.context),
         glib_escape(&scope)
     ));
@@ -280,6 +327,23 @@ fn build_ui(app: &gtk::Application, src: Rc<Source>) {
         }
     ));
     canvas.add_controller(motion);
+
+    let click = gtk::GestureClick::new();
+    click.connect_released(glib::clone!(
+        #[strong]
+        view,
+        #[strong]
+        src,
+        #[weak]
+        window,
+        move |_, _, x, y| {
+            let uid = view.borrow().pick(x, y);
+            if let Some(uid) = uid {
+                details::open(&window, &view, &src, uid);
+            }
+        }
+    ));
+    canvas.add_controller(click);
 
     let update_matches = {
         let view = view.clone();

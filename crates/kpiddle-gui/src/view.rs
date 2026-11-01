@@ -415,7 +415,8 @@ impl View {
              <span alpha='65%'>{} · {}\nnode {}</span>\n\n\
              Status\t\t{}{}\n\
              CPU\t\t<b>{}</b>\n\
-             Memory\t<b>{}</b>{}",
+             Memory\t<b>{}</b>{}\n\n\
+             <span alpha='50%' size='small'>click for details</span>",
             glib_escape(&p.pod.name),
             glib_escape(&p.pod.namespace),
             glib_escape(&p.workload.describe()),

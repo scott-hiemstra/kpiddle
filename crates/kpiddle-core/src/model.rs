@@ -114,6 +114,18 @@ pub struct Resources {
     pub mem_bytes: Option<u64>,
 }
 
+impl Resources {
+    /// "100m CPU, 64.0 MiB" or "none".
+    pub fn text(&self) -> String {
+        let parts: Vec<String> =
+            [self.cpu_millis.map(|m| format!("{} CPU", fmt_cpu(m))), self.mem_bytes.map(fmt_bytes)]
+                .into_iter()
+                .flatten()
+                .collect();
+        if parts.is_empty() { "none".into() } else { parts.join(", ") }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Container {
     pub name: Arc<str>,
@@ -593,6 +605,23 @@ pub struct PodView {
     pub usage: Measurement,
 }
 
+impl PodView {
+    /// The owner chain, top controller first: "deployment/web (via
+    /// replicaset/web-7d9f)", or a note that the pod has no controller.
+    pub fn owner_text(&self) -> String {
+        match &self.pod.owner {
+            Some(direct) if *direct != self.workload => {
+                format!("{} (via {})", self.workload.describe(), direct.describe())
+            }
+            Some(_) => self.workload.describe(),
+            None if self.pod.static_pod => {
+                format!("none: a static pod, run by the kubelet on {}", self.pod.node.as_deref().unwrap_or("its node"))
+            }
+            None => "none (a bare pod: deleting it is permanent)".into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct WorkloadGroup {
     pub workload: Workload,
@@ -793,5 +822,37 @@ mod tests {
         assert_eq!(fmt_age(Duration::from_secs(45)), "45s");
         assert_eq!(fmt_age(Duration::from_secs(180)), "3m");
         assert_eq!(fmt_age(Duration::from_secs(7300)), "2h");
+    }
+
+    #[test]
+    fn resources_text() {
+        assert_eq!(Resources::default().text(), "none");
+        assert_eq!(Resources { cpu_millis: Some(100.0), mem_bytes: Some(64 << 20) }.text(), "100m CPU, 64.0 MiB");
+        assert_eq!(Resources { cpu_millis: None, mem_bytes: Some(128 << 20) }.text(), "128.0 MiB");
+    }
+
+    #[test]
+    fn owner_text_names_the_chain() {
+        let rs = Workload { kind: WorkloadKind::ReplicaSet, name: "web-7d9f".into() };
+        let dep = Workload { kind: WorkloadKind::Deployment, name: "web".into() };
+        let view = |owner: Option<Workload>, workload: Workload| PodView {
+            pod: Arc::new(Pod { owner, ..pod("shop", "web-a", Phase::Running) }),
+            workload,
+            usage: Measurement::Missing,
+        };
+        assert_eq!(view(Some(rs), dep.clone()).owner_text(), "deployment/web (via replicaset/web-7d9f)");
+        assert_eq!(view(Some(dep.clone()), dep).owner_text(), "deployment/web");
+        let bare = Workload { kind: WorkloadKind::Pod, name: "web-a".into() };
+        assert!(view(None, bare.clone()).owner_text().contains("permanent"));
+        let mirror = PodView {
+            pod: Arc::new(Pod {
+                static_pod: true,
+                node: Some("cp".into()),
+                ..pod("kube-system", "etcd-cp", Phase::Running)
+            }),
+            workload: bare,
+            usage: Measurement::Missing,
+        };
+        assert_eq!(mirror.owner_text(), "none: a static pod, run by the kubelet on cp");
     }
 }
