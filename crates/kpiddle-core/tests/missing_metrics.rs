@@ -107,7 +107,7 @@ fn partial_metrics() {
     let web = s.namespaces[0].workloads.iter().find(|w| &*w.workload.name == "web").unwrap();
     assert!(web.total.is_partial());
     assert_eq!(web.total.cpu_text(), "≥ 1.4 cores");
-    assert_eq!(web.total.coverage_text().as_deref(), Some("7/10 running pods measured"));
+    assert_eq!(web.total.coverage_text().as_deref(), Some("7/10 eligible pods measured"));
 
     let cart = s.namespaces[0].workloads.iter().find(|w| &*w.workload.name == "cart").unwrap();
     assert!(!cart.total.is_partial());
@@ -116,7 +116,7 @@ fn partial_metrics() {
 
     let shop = &s.namespaces[0].total;
     assert_eq!(shop.cpu_text(), "≥ 1.5 cores");
-    assert_eq!(shop.coverage_text().as_deref(), Some("9/12 running pods measured"));
+    assert_eq!(shop.coverage_text().as_deref(), Some("9/12 eligible pods measured"));
     assert_eq!(s.metrics, MetricsState::Ok);
     assert!(!s.suggest_requests_mode());
 

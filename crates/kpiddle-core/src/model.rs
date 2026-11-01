@@ -296,7 +296,7 @@ pub struct Total {
     pub usage: Usage,
     /// Members with a fresh or stale sample.
     pub measured: usize,
-    /// Members that should have usage (running ones).
+    /// Members eligible for usage: running, or Unknown (node unreachable).
     pub expected: usize,
     /// Measured members whose sample is stale.
     pub stale: usize,
@@ -344,9 +344,9 @@ impl Total {
         self.text(fmt_bytes(self.usage.mem_bytes))
     }
 
-    /// "7/10 running pods measured" when not every member was measured.
+    /// "7/10 eligible pods measured" when not every member was measured.
     pub fn coverage_text(&self) -> Option<String> {
-        (self.measured < self.expected).then(|| format!("{}/{} running pods measured", self.measured, self.expected))
+        (self.measured < self.expected).then(|| format!("{}/{} eligible pods measured", self.measured, self.expected))
     }
 
     pub fn sort_key(&self, metric: Metric) -> SortKey {

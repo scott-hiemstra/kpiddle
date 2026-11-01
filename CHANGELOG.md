@@ -21,7 +21,7 @@ CPU and memory, in the PIDdle style.
   - a pod without a sample shows `—` and sorts after measured pods;
   - stale values are dimmed and carry their age;
   - totals over partly measured groups are marked `≥` with their coverage
-    (`7/10 running pods measured`); pending and finished pods
+    (`7/10 eligible pods measured`); pending and finished pods
     have no usage, so they don't count against coverage and are listed as
     not running;
   - the header always shows the metrics state: OK, stale since when, or
