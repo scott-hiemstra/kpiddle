@@ -124,6 +124,9 @@ fn draw_header(f: &mut Frame, app: &App, pal: &Palette, area: Rect) {
     if let Some(cov) = c.coverage_text() {
         totals.push(Span::styled(format!("   {cov}"), Style::new().fg(pal.fix(WARN))));
     }
+    if c.not_running > 0 {
+        totals.push(Span::styled(format!("   {} not running", c.not_running), dim));
+    }
     if s.suggest_requests_mode() {
         totals.push(Span::styled(
             "   no running pod has usage, so none is shown (a labeled requests/limits mode is planned)",

@@ -300,11 +300,15 @@ pub struct Total {
     pub expected: usize,
     /// Measured members whose sample is stale.
     pub stale: usize,
+    /// Members that aren't running (pending or finished), so have no usage
+    /// and are left out of `expected`.
+    pub not_running: usize,
 }
 
 impl Total {
     pub fn add(&mut self, m: &Measurement) {
         if *m == Measurement::NotRunning {
+            self.not_running += 1;
             return;
         }
         self.expected += 1;
@@ -340,9 +344,9 @@ impl Total {
         self.text(fmt_bytes(self.usage.mem_bytes))
     }
 
-    /// "7/10 pods measured" when not every member was measured.
+    /// "7/10 running pods measured" when not every member was measured.
     pub fn coverage_text(&self) -> Option<String> {
-        (self.measured < self.expected).then(|| format!("{}/{} pods measured", self.measured, self.expected))
+        (self.measured < self.expected).then(|| format!("{}/{} running pods measured", self.measured, self.expected))
     }
 
     pub fn sort_key(&self, metric: Metric) -> SortKey {
@@ -676,7 +680,7 @@ mod tests {
         c.upsert_pod(pod("ns", "done", Phase::Succeeded));
         c.apply_metrics(Ok(vec![sample("ns", "run", t(0), 100.0)]), t(0));
         let s = c.snapshot(t(1));
-        assert_eq!((s.cluster.measured, s.cluster.expected), (1, 1));
+        assert_eq!((s.cluster.measured, s.cluster.expected, s.cluster.not_running), (1, 1, 2));
         assert!(!s.cluster.is_partial());
         let wait = s.pods.iter().find(|p| &*p.pod.name == "wait").unwrap();
         assert_eq!(wait.usage, Measurement::NotRunning);

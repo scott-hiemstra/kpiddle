@@ -74,11 +74,14 @@ fn truncate(s: &str, w: usize) -> String {
     if s.chars().count() <= w { s.to_string() } else { s.chars().take(w - 1).chain(['…']).collect() }
 }
 
-/// "  (7/10 pods measured, stale)" for a total that needs qualifying.
+/// "  (7/10 running pods measured, 2 stale)" for a total that needs qualifying.
 fn total_marks(t: &Total) -> String {
     let mut marks: Vec<String> = t.coverage_text().into_iter().collect();
     if t.is_stale() {
         marks.push(format!("{} stale", t.stale));
+    }
+    if t.not_running > 0 {
+        marks.push(format!("{} not running", t.not_running));
     }
     if marks.is_empty() { String::new() } else { format!("  ({})", marks.join(", ")) }
 }
