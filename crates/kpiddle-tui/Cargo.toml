@@ -7,7 +7,6 @@ license.workspace = true
 authors.workspace = true
 publish = false
 
-# Until the Ratatui interface lands this prints a refreshing text listing.
 # The binary takes the `kpiddle` name for now; a GUI/TUI launcher will
 # take it over once there is a GUI.
 [[bin]]
@@ -16,3 +15,5 @@ path = "src/main.rs"
 
 [dependencies]
 kpiddle-core = { path = "../kpiddle-core" }
+piddle-view = { path = "../piddle-view" }
+ratatui = "0.30.2"

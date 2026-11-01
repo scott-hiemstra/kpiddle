@@ -1,16 +1,19 @@
-//! `kpiddle`: pods by CPU and memory, grouped by namespace and workload.
-//!
-//! A plain refreshing listing until the Ratatui interface lands. It shows
-//! the same snapshot the interface will: unmeasured usage reads `—`, totals
-//! say how many pods they cover, and the metrics source state is always in
-//! the header.
+//! kpiddle terminal front end: pods by CPU and memory, grouped by namespace
+//! and workload. Read-only.
 
-use std::fmt::Write as _;
-use std::io::{IsTerminal, Write as _};
-use std::time::{Duration, Instant, SystemTime};
+mod app;
+mod text;
+mod ui;
 
-use kpiddle_core::model::{Measurement, MetricsState, PodsState, Snapshot, Total, fmt_age};
-use kpiddle_core::source::{self, Options, POLL_EVERY};
+use std::io::IsTerminal;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use kpiddle_core::model::{MetricsState, PodsState};
+use kpiddle_core::source::{self, Options};
+use piddle_view::encode::fmt_clock;
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
+
+use app::App;
 
 const HELP: &str = "\
 kpiddle: Kubernetes pods by CPU and memory (read-only)
@@ -19,28 +22,34 @@ Usage: kpiddle [OPTIONS]
 
       --context NAME     kubeconfig context (default: the current one)
   -n, --namespace NAME   one namespace (default: all namespaces)
-      --once             print one listing and exit
+      --once             print one plain listing and exit
   -h, --help             show this help
   -V, --version
 
-Usage comes from metrics.k8s.io (metrics-server). Where it is missing the
-listing shows — rather than 0, and totals say how many pods they cover.";
+Usage comes from metrics.k8s.io (metrics-server). Where it is missing,
+kpiddle shows — rather than 0, and totals say how many pods they cover.
+Inside the program, press ? for keys.";
 
-const REFRESH: Duration = Duration::from_secs(5);
+/// How often the view is rebuilt from the latest data, so ages and the
+/// metrics state stay current between updates.
+const REFRESH: Duration = Duration::from_secs(1);
 /// With --once, how long to wait for the first pod list and metrics poll.
 const ONCE_WAIT: Duration = Duration::from_secs(20);
 
-fn main() {
-    let opts = match parse_args() {
+fn main() -> std::io::Result<()> {
+    let (opts, once) = match parse_args() {
         Ok(Some(o)) => o,
-        Ok(None) => return,
+        Ok(None) => return Ok(()),
         Err(e) => {
             eprintln!("kpiddle: {e}\n\n{HELP}");
             std::process::exit(2);
         }
     };
-    let once = opts.1;
-    let src = source::spawn(opts.0).unwrap_or_else(|e| {
+    if !once && !std::io::stdout().is_terminal() {
+        eprintln!("kpiddle: needs an interactive terminal (or use --once)");
+        std::process::exit(2);
+    }
+    let src = source::spawn(opts).unwrap_or_else(|e| {
         eprintln!("kpiddle: {e}");
         std::process::exit(1);
     });
@@ -51,28 +60,50 @@ fn main() {
             let s = src.lock().snapshot(SystemTime::now());
             let ready = s.pods_state != PodsState::Listing && s.metrics != MetricsState::Waiting;
             if ready || start.elapsed() > ONCE_WAIT {
-                print!("{}", render(&src.context, src.namespace.as_deref(), &s));
-                return;
+                print!("{}", text::render(&src.context, src.namespace.as_deref(), &s));
+                return Ok(());
             }
             std::thread::sleep(Duration::from_millis(200));
         }
     }
 
-    let tty = std::io::stdout().is_terminal();
-    loop {
-        let s = src.lock().snapshot(SystemTime::now());
-        let mut out = std::io::stdout().lock();
-        if tty {
-            // Home and clear, so each listing replaces the previous one.
-            let _ = write!(out, "\x1b[H\x1b[2J");
+    let mut app = App::new(src.context.clone(), src.namespace.clone());
+    let palette = ui::Palette::detect();
+    // ratatui::init installs a panic hook that restores the terminal.
+    let mut terminal = ratatui::init();
+    let result = (|| -> std::io::Result<()> {
+        let mut next_refresh = Instant::now();
+        let mut dirty = true;
+        loop {
+            if Instant::now() >= next_refresh {
+                // Refresh quickly until the first list and poll arrive.
+                let snap = src.lock().snapshot(SystemTime::now());
+                let waiting = snap.pods_state == PodsState::Listing || snap.metrics == MetricsState::Waiting;
+                app.apply(snap);
+                next_refresh = Instant::now() + if waiting { Duration::from_millis(250) } else { REFRESH };
+                dirty = true;
+            }
+            if dirty {
+                terminal.draw(|f| ui::draw(f, &mut app, &palette))?;
+                dirty = false;
+            }
+            while event::poll(next_refresh.saturating_duration_since(Instant::now()))? {
+                match event::read()? {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => app.on_key(k),
+                    Event::Resize(..) => {}
+                    _ => continue,
+                }
+                dirty = true;
+                if app.quit {
+                    return Ok(());
+                }
+                // Draw before blocking again.
+                break;
+            }
         }
-        let _ = write!(out, "{}", render(&src.context, src.namespace.as_deref(), &s));
-        let _ = out.flush();
-        drop(out);
-        // Refresh quickly until the first list and poll have arrived.
-        let waiting = s.pods_state == PodsState::Listing || s.metrics == MetricsState::Waiting;
-        std::thread::sleep(if waiting { Duration::from_millis(500) } else { REFRESH });
-    }
+    })();
+    ratatui::restore();
+    result
 }
 
 fn parse_args() -> Result<Option<(Options, bool)>, String> {
@@ -107,90 +138,16 @@ fn parse_args() -> Result<Option<(Options, bool)>, String> {
     Ok(Some((opts, once)))
 }
 
-const NAME_W: usize = 52;
-
-fn render(context: &str, namespace: Option<&str>, s: &Snapshot) -> String {
-    let mut o = String::new();
-    let scope = namespace.map_or("all namespaces".to_string(), |n| format!("namespace {n}"));
-    let _ = writeln!(o, "kpiddle · context {context} · {scope}");
-    let _ = writeln!(o, "{}", metrics_line(&s.metrics, s.taken));
-    match &s.pods_state {
-        PodsState::Listing => {
-            let _ = writeln!(o, "pods: listing…");
-            return o;
-        }
-        PodsState::Failing { reason } => {
-            let _ = writeln!(o, "pods: watch failing, list may be out of date: {reason}");
-        }
-        PodsState::Synced => {}
-    }
-    let _ = writeln!(
-        o,
-        "{} pods · CPU {} · memory {}{}",
-        s.pods.len(),
-        s.cluster.cpu_text(),
-        s.cluster.mem_text(),
-        total_marks(&s.cluster)
-    );
-    if s.suggest_requests_mode() {
-        let _ = writeln!(
-            o,
-            "No running pod has usage, so CPU and memory read —. A labeled requests/limits mode is planned."
-        );
-    }
-    let _ = writeln!(o);
-    let _ = writeln!(o, "{:<NAME_W$} {:>12} {:>11}  STATUS", "NAMESPACE / WORKLOAD / POD", "CPU", "MEMORY");
-    for ns in &s.namespaces {
-        row(&mut o, &ns.name, &ns.total.cpu_text(), &ns.total.mem_text(), total_marks(&ns.total).trim_start());
-        for w in &ns.workloads {
-            let name = format!("  {}", w.workload.describe());
-            row(&mut o, &name, &w.total.cpu_text(), &w.total.mem_text(), total_marks(&w.total).trim_start());
-            for &i in &w.pods {
-                let p = &s.pods[i];
-                let mut status = p.pod.reason.as_deref().unwrap_or(p.pod.phase.label()).to_string();
-                let restarts = p.pod.restarts();
-                if restarts > 0 {
-                    let _ = write!(status, ", {restarts} restarts");
-                }
-                if let Some(age) = p.usage.age_text() {
-                    let _ = write!(status, " · usage {age}");
-                } else if p.usage == Measurement::Missing {
-                    status.push_str(" · no usage sample");
-                }
-                row(&mut o, &format!("    {}", p.pod.name), &p.usage.cpu_text(), &p.usage.mem_text(), &status);
-            }
-        }
-    }
-    o
-}
-
-fn row(o: &mut String, name: &str, cpu: &str, mem: &str, status: &str) {
-    let name = truncate(name, NAME_W);
-    let _ = writeln!(o, "{name:<NAME_W$} {cpu:>12} {mem:>11}  {status}");
-}
-
-fn truncate(s: &str, w: usize) -> String {
-    if s.chars().count() <= w { s.to_string() } else { s.chars().take(w - 1).chain(['…']).collect() }
-}
-
-/// "  (7/10 pods measured, stale)" for a total that needs qualifying.
-fn total_marks(t: &Total) -> String {
-    let mut marks: Vec<String> = t.coverage_text().into_iter().collect();
-    if t.is_stale() {
-        marks.push(format!("{} stale", t.stale));
-    }
-    if marks.is_empty() { String::new() } else { format!("  ({})", marks.join(", ")) }
-}
-
-fn metrics_line(m: &MetricsState, now: SystemTime) -> String {
+/// "OK", "STALE since 14:02:10: connection refused", "UNAVAILABLE: …".
+pub fn metrics_text(m: &MetricsState) -> String {
     match m {
-        MetricsState::Waiting => "metrics: waiting for the first poll…".into(),
-        MetricsState::Ok => format!("metrics: OK (polled every {}s)", POLL_EVERY.as_secs()),
+        MetricsState::Waiting => "waiting for the first poll…".into(),
+        MetricsState::Ok => "OK".into(),
         MetricsState::Stale { last_success, reason } => {
-            let ago = fmt_age(now.duration_since(*last_success).unwrap_or_default());
+            let us = last_success.duration_since(UNIX_EPOCH).unwrap_or_default().as_micros() as u64;
             let why = reason.as_ref().map_or(String::new(), |r| format!(": {r}"));
-            format!("metrics: STALE, last update {ago} ago{why}")
+            format!("STALE since {}{why}", fmt_clock(us))
         }
-        MetricsState::Unavailable { reason } => format!("metrics: UNAVAILABLE: {reason}"),
+        MetricsState::Unavailable { reason } => format!("UNAVAILABLE: {reason}"),
     }
 }
