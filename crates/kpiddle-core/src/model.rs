@@ -159,18 +159,21 @@ impl Pod {
         self.reason = self.reason.as_ref().map(clean);
         self.node = self.node.as_ref().map(clean);
         self.ip = self.ip.as_ref().map(clean);
-        if let Some(w) = &mut self.owner {
-            w.name = clean(&w.name);
-            if let WorkloadKind::Other(kind) = &w.kind {
-                w.kind = WorkloadKind::Other(clean(kind));
-            }
-        }
+        self.owner = self.owner.map(sanitize_workload);
         for c in &mut self.containers {
             c.name = clean(&c.name);
             c.image = clean(&c.image);
         }
         self
     }
+}
+
+fn sanitize_workload(w: Workload) -> Workload {
+    let kind = match w.kind {
+        WorkloadKind::Other(kind) => WorkloadKind::Other(sanitize(&kind).into()),
+        k => k,
+    };
+    Workload { kind, name: sanitize(&w.name).into() }
 }
 
 /// One pod's usage from metrics.k8s.io, summed over its containers.
@@ -383,11 +386,29 @@ pub enum MetricsState {
     },
 }
 
+/// Whether the pod list can be trusted, so an empty or old list isn't
+/// mistaken for an empty or unchanged cluster.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PodsState {
+    /// The first list hasn't completed.
+    #[default]
+    Listing,
+    Synced,
+    /// Watching pods is failing; the list is as of the last success.
+    Failing {
+        reason: String,
+    },
+}
+
 /// The latest pods and samples, joined into snapshots on demand.
 #[derive(Debug, Default)]
 pub struct Cluster {
     pods: HashMap<Arc<str>, Arc<Pod>>,
+    pods_state: PodsState,
     samples: HashMap<(Arc<str>, Arc<str>), PodSample>,
+    /// (namespace, controller) → the controller that owns it, such as a
+    /// ReplicaSet's Deployment or a Job's CronJob.
+    owners: HashMap<(Arc<str>, Workload), Workload>,
     last_success: Option<SystemTime>,
     last_error: Option<String>,
 }
@@ -417,6 +438,40 @@ impl Cluster {
         let live: std::collections::HashSet<_> =
             self.pods.values().map(|p| (p.namespace.clone(), p.name.clone())).collect();
         self.samples.retain(|k, _| live.contains(k));
+    }
+
+    pub fn set_pods_state(&mut self, state: PodsState) {
+        self.pods_state = match state {
+            PodsState::Failing { reason } => PodsState::Failing { reason: sanitize(&reason) },
+            s => s,
+        };
+    }
+
+    /// Record that `child` (a ReplicaSet, a Job) is owned by `parent`, or by
+    /// nothing.
+    pub fn set_owner(&mut self, namespace: &str, child: Workload, parent: Option<Workload>) {
+        let key = (Arc::from(sanitize(namespace)), sanitize_workload(child));
+        match parent {
+            Some(p) => self.owners.insert(key, sanitize_workload(p)),
+            None => self.owners.remove(&key),
+        };
+    }
+
+    pub fn remove_owner(&mut self, namespace: &str, child: Workload) {
+        self.owners.remove(&(Arc::from(sanitize(namespace)), sanitize_workload(child)));
+    }
+
+    /// Replace every owner record for controllers of `kind`, as after a
+    /// full relist.
+    pub fn replace_owners(
+        &mut self,
+        kind: &WorkloadKind,
+        owners: impl IntoIterator<Item = (Arc<str>, Workload, Workload)>,
+    ) {
+        self.owners.retain(|(_, child), _| child.kind != *kind);
+        for (ns, child, parent) in owners {
+            self.set_owner(&ns, child, Some(parent));
+        }
     }
 
     /// Record the outcome of one metrics poll that finished at `at`. Pods the
@@ -452,7 +507,7 @@ impl Cluster {
         let mut pods: Vec<PodView> = self
             .pods
             .values()
-            .map(|pod| PodView { usage: self.measure(pod, now), workload: pod.workload(), pod: pod.clone() })
+            .map(|pod| PodView { usage: self.measure(pod, now), workload: self.workload_of(pod), pod: pod.clone() })
             .collect();
         pods.sort_by(|a, b| {
             (&a.pod.namespace, &a.workload, &a.pod.name).cmp(&(&b.pod.namespace, &b.workload, &b.pod.name))
@@ -479,7 +534,29 @@ impl Cluster {
             w.pods.push(i);
         }
 
-        Snapshot { taken: now, metrics: self.metrics_state(now), pods, namespaces, cluster }
+        Snapshot {
+            taken: now,
+            metrics: self.metrics_state(now),
+            pods_state: self.pods_state.clone(),
+            pods,
+            namespaces,
+            cluster,
+        }
+    }
+
+    /// The top of the pod's owner chain as far as it is known: a Deployment
+    /// once its ReplicaSet has been seen, the ReplicaSet until then.
+    fn workload_of(&self, pod: &Pod) -> Workload {
+        let mut w = pod.workload();
+        // Real chains are at most two links (pod → ReplicaSet → Deployment);
+        // the bound only guards against a cycle.
+        for _ in 0..4 {
+            match self.owners.get(&(pod.namespace.clone(), w.clone())) {
+                Some(parent) => w = parent.clone(),
+                None => break,
+            }
+        }
+        w
     }
 
     fn measure(&self, pod: &Pod, now: SystemTime) -> Measurement {
@@ -526,6 +603,7 @@ pub struct NamespaceGroup {
 pub struct Snapshot {
     pub taken: SystemTime,
     pub metrics: MetricsState,
+    pub pods_state: PodsState,
     /// Sorted by namespace, workload and name.
     pub pods: Vec<PodView>,
     pub namespaces: Vec<NamespaceGroup>,
@@ -636,6 +714,48 @@ mod tests {
         assert_eq!(p.pod.reason.as_deref(), Some("Crash\u{FFFD}[2J"));
         assert_eq!(p.workload.describe(), "Evil/x\u{FFFD}y");
         assert_eq!(s.metrics, MetricsState::Unavailable { reason: "forbidden\u{FFFD}]0;pwned\u{FFFD}".into() });
+    }
+
+    #[test]
+    fn owner_chain_resolves_to_top_controller() {
+        let rs = Workload { kind: WorkloadKind::ReplicaSet, name: "web-7d9f".into() };
+        let deploy = Workload { kind: WorkloadKind::Deployment, name: "web".into() };
+        let mut c = Cluster::new();
+        c.upsert_pod(Pod { owner: Some(rs.clone()), ..pod("shop", "web-7d9f-abc", Phase::Running) });
+        // Until the ReplicaSet is seen, the pod groups under it.
+        assert_eq!(c.snapshot(t(0)).pods[0].workload, rs);
+        c.set_owner("shop", rs.clone(), Some(deploy.clone()));
+        assert_eq!(c.snapshot(t(0)).pods[0].workload, deploy);
+        // Same names in another namespace are a different ReplicaSet.
+        c.upsert_pod(Pod {
+            uid: "other".into(),
+            owner: Some(rs.clone()),
+            ..pod("dev", "web-7d9f-abc", Phase::Running)
+        });
+        let s = c.snapshot(t(0));
+        assert_eq!(s.pods.iter().find(|p| &*p.pod.namespace == "dev").unwrap().workload, rs);
+        // A relist without the ReplicaSet forgets its owner.
+        c.replace_owners(&WorkloadKind::ReplicaSet, []);
+        assert!(c.snapshot(t(0)).pods.iter().all(|p| p.workload == rs));
+    }
+
+    #[test]
+    fn owner_cycle_terminates() {
+        let a = Workload { kind: WorkloadKind::Other("A".into()), name: "a".into() };
+        let b = Workload { kind: WorkloadKind::Other("B".into()), name: "b".into() };
+        let mut c = Cluster::new();
+        c.set_owner("ns", a.clone(), Some(b.clone()));
+        c.set_owner("ns", b, Some(a.clone()));
+        c.upsert_pod(Pod { owner: Some(a), ..pod("ns", "p", Phase::Running) });
+        c.snapshot(t(0));
+    }
+
+    #[test]
+    fn pods_state_is_reported_and_sanitized() {
+        let mut c = Cluster::new();
+        assert_eq!(c.snapshot(t(0)).pods_state, PodsState::Listing);
+        c.set_pods_state(PodsState::Failing { reason: "forbidden\x1b[0m".into() });
+        assert_eq!(c.snapshot(t(0)).pods_state, PodsState::Failing { reason: "forbidden\u{FFFD}[0m".into() });
     }
 
     #[test]
