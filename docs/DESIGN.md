@@ -1,7 +1,7 @@
 # kpiddle: PIDdle for Kubernetes
 
-Status: the read-only TUI and a first GUI are implemented as kpiddle 0.1.0
-(unreleased). The sections below are the original design; the code follows it
+Status: the TUI (with actions behind `--allow-actions`) and a first,
+read-only GUI are implemented as kpiddle 0.1.0 (unreleased). The sections below are the original design; the code follows it
 except where noted in [CHANGELOG.md](../CHANGELOG.md).
 
 Update, 2026-11-01: kpiddle has since moved to its own repo, as anticipated

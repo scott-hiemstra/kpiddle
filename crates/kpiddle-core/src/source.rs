@@ -5,16 +5,19 @@
 //! polled every [`POLL_EVERY`]. Everything runs on one background thread;
 //! views lock the cluster and take a [`Cluster::snapshot`] per frame.
 //!
+//! Actions (see [`crate::actions`]) run on the same thread, and only when
+//! [`Options::allow_actions`] is set; otherwise [`Source::act`] refuses.
+//!
 //! Credentials are only ever handed to kube-rs. Nothing here prints the
 //! kubeconfig, and error text is sanitized by the [`Cluster`].
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::{Duration, SystemTime};
 
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::ReplicaSet;
-use k8s_openapi::api::batch::v1::Job;
+use k8s_openapi::api::batch::v1::Job as KJob;
 use k8s_openapi::api::core::v1::{Pod as KPod, ResourceRequirements};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
 use kube::api::{ApiResource, DynamicObject, GroupVersionKind, ListParams, PartialObjectMeta};
@@ -24,6 +27,7 @@ use kube::runtime::watcher::{self, Event, watcher};
 use kube::{Api, Client, Config, Resource};
 use serde::Deserialize;
 
+use crate::actions::{self, Assessment, Outcome};
 use crate::model::{Cluster, Container, Phase, Pod, PodSample, PodsState, Resources, Usage, Workload, WorkloadKind};
 use crate::quantity;
 
@@ -37,7 +41,13 @@ pub struct Options {
     pub context: Option<String>,
     /// Watch one namespace; all namespaces when `None`.
     pub namespace: Option<String>,
+    /// Allow evict, delete and rollout restart. Off by default: kpiddle
+    /// only reads unless asked.
+    pub allow_actions: bool,
 }
+
+/// A confirmed action and where to send its outcome.
+type Job = (Assessment, mpsc::Sender<Outcome>);
 
 /// A running connection to one cluster.
 pub struct Source {
@@ -45,11 +55,29 @@ pub struct Source {
     /// The kubeconfig context name, or "in-cluster".
     pub context: String,
     pub namespace: Option<String>,
+    /// `None` when actions aren't allowed.
+    jobs: Option<tokio::sync::mpsc::UnboundedSender<Job>>,
 }
 
 impl Source {
     pub fn lock(&self) -> MutexGuard<'_, Cluster> {
         lock(&self.cluster)
+    }
+
+    pub fn actions_allowed(&self) -> bool {
+        self.jobs.is_some()
+    }
+
+    /// Start a confirmed action in the background. The outcome arrives on
+    /// the returned channel; poll it with `try_recv`.
+    pub fn act(&self, a: Assessment) -> Result<mpsc::Receiver<Outcome>, String> {
+        if let Some(why) = &a.blocked {
+            return Err(format!("Not allowed: {why}"));
+        }
+        let jobs = self.jobs.as_ref().ok_or("Read-only: start kpiddle with --allow-actions to change the cluster.")?;
+        let (tx, rx) = mpsc::channel();
+        jobs.send((a, tx)).map_err(|_| "The cluster connection has stopped.".to_string())?;
+        Ok(rx)
     }
 }
 
@@ -59,18 +87,29 @@ impl Source {
 /// snapshot's [`PodsState`] and metrics state.
 pub fn spawn(opts: Options) -> Result<Source, String> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
-    let (client, context) = rt.block_on(connect(&opts))?;
+    let (client, action_client, context) = rt.block_on(connect(&opts))?;
     let cluster = Arc::new(Mutex::new(Cluster::new()));
     let feed = cluster.clone();
     let namespace = opts.namespace.clone();
+    let (jobs, queue) = match opts.allow_actions {
+        true => {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (Some(tx), Some((action_client, rx)))
+        }
+        false => (None, None),
+    };
     std::thread::Builder::new()
         .name("kpiddle-source".into())
-        .spawn(move || rt.block_on(run(client, namespace, feed)))
+        .spawn(move || rt.block_on(run(client, namespace, feed, queue)))
         .map_err(|e| e.to_string())?;
-    Ok(Source { cluster, context, namespace: opts.namespace })
+    Ok(Source { cluster, context, namespace: opts.namespace, jobs })
 }
 
-async fn connect(opts: &Options) -> Result<(Client, String), String> {
+/// Two clients on one config: the default one retries 429 and 503 with
+/// backoff, which suits the watches. Actions get one that doesn't, so a
+/// PodDisruptionBudget refusal (429 from the eviction API) is reported at
+/// once instead of retried.
+async fn connect(opts: &Options) -> Result<(Client, Client, String), String> {
     let config = match &opts.context {
         Some(ctx) => {
             let o = KubeConfigOptions { context: Some(ctx.clone()), ..Default::default() };
@@ -83,17 +122,35 @@ async fn connect(opts: &Options) -> Result<(Client, String), String> {
         .clone()
         .or_else(|| Kubeconfig::read().ok().and_then(|k| k.current_context))
         .unwrap_or_else(|| "in-cluster".into());
+    let mut once = config.clone();
+    once.default_retry = false;
     let client = Client::try_from(config).map_err(|e| e.to_string())?;
-    Ok((client, context))
+    let action_client = Client::try_from(once).map_err(|e| e.to_string())?;
+    Ok((client, action_client, context))
 }
 
-async fn run(client: Client, ns: Option<String>, cluster: Arc<Mutex<Cluster>>) {
+async fn run(
+    client: Client,
+    ns: Option<String>,
+    cluster: Arc<Mutex<Cluster>>,
+    queue: Option<(Client, tokio::sync::mpsc::UnboundedReceiver<Job>)>,
+) {
     tokio::join!(
         watch_pods(api(&client, &ns), cluster.clone()),
         watch_owners(api::<PartialObjectMeta<ReplicaSet>>(&client, &ns), WorkloadKind::ReplicaSet, cluster.clone()),
-        watch_owners(api::<PartialObjectMeta<Job>>(&client, &ns), WorkloadKind::Job, cluster.clone()),
+        watch_owners(api::<PartialObjectMeta<KJob>>(&client, &ns), WorkloadKind::Job, cluster.clone()),
+        run_actions(queue),
         poll_metrics(client, ns, cluster),
     );
+}
+
+/// One action at a time, in the order confirmed.
+async fn run_actions(queue: Option<(Client, tokio::sync::mpsc::UnboundedReceiver<Job>)>) {
+    let Some((client, mut queue)) = queue else { return };
+    while let Some((a, reply)) = queue.recv().await {
+        // The UI may have quit; nobody to tell.
+        let _ = reply.send(actions::execute(client.clone(), &a).await);
+    }
 }
 
 fn api<K>(client: &Client, ns: &Option<String>) -> Api<K>
@@ -271,6 +328,9 @@ fn convert_pod(p: &KPod) -> Option<Pod> {
         ip: status.and_then(|s| s.pod_ip.as_deref()).map(Into::into),
         created: meta.creation_timestamp.as_ref().map(|t| SystemTime::from(t.0)),
         containers,
+        static_pod: meta.owner_references.iter().flatten().any(|r| r.kind == "Node" && r.controller == Some(true))
+            || meta.annotations.as_ref().is_some_and(|a| a.contains_key("kubernetes.io/config.mirror")),
+        control_plane: meta.labels.as_ref().and_then(|l| l.get("tier")).is_some_and(|t| t == "control-plane"),
     })
 }
 
@@ -394,5 +454,26 @@ mod tests {
         assert_eq!(c.requests, Resources { cpu_millis: Some(100.0), mem_bytes: Some(64 << 20) });
         assert_eq!(c.limits, Resources { cpu_millis: None, mem_bytes: Some(128 << 20) });
         assert_eq!(pod.node.as_deref(), Some("node-1"));
+        // The Node reference isn't the controller, so this isn't a static pod.
+        assert!(!pod.static_pod && !pod.control_plane);
+    }
+
+    #[test]
+    fn static_control_plane_pod() {
+        let p: KPod = serde_json::from_value(serde_json::json!({
+            "metadata": {
+                "name": "etcd-cp", "namespace": "kube-system", "uid": "u2",
+                "labels": { "component": "etcd", "tier": "control-plane" },
+                "annotations": { "kubernetes.io/config.mirror": "abc" },
+                "ownerReferences": [
+                    { "apiVersion": "v1", "kind": "Node", "name": "cp", "uid": "n", "controller": true }
+                ]
+            },
+            "spec": { "containers": [] }
+        }))
+        .unwrap();
+        let pod = convert_pod(&p).unwrap();
+        assert!(pod.static_pod && pod.control_plane);
+        assert_eq!(pod.owner, None);
     }
 }

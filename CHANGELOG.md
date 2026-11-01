@@ -5,8 +5,9 @@ published as its release notes, and a release fails if it is missing.
 
 ## [0.1.0] - Unreleased
 
-First release: a read-only terminal view of a Kubernetes cluster's pods by
-CPU and memory, in the PIDdle style.
+First release: a terminal view of a Kubernetes cluster's pods by CPU and
+memory, in the PIDdle style. It only reads unless started with
+`--allow-actions`.
 
 ### Added
 - Pods grouped by namespace and workload (Deployment, StatefulSet,
@@ -27,6 +28,20 @@ CPU and memory, in the PIDdle style.
     unavailable with the reason.
 - `--context` and `--namespace` like kubectl; all namespaces by default.
 - `--once` prints a plain listing for scripts.
+- Actions, only with `--allow-actions` (the header then says *actions on*),
+  from the list or the details popup:
+  - `e` evicts a pod through the eviction API, so PodDisruptionBudgets are
+    respected. A budget's refusal is shown as such and not retried.
+  - `r` rollout-restarts the pod's Deployment, StatefulSet or DaemonSet.
+  - `d` deletes a pod, bypassing budgets.
+  - Each asks first: yes/no defaulting to no, or typing the name for
+    deletes and for pods in `kube-system`, control-plane pods, pods with no
+    controller (removing them is permanent) and StatefulSet pods. Static
+    pods are refused, since removing one through the API doesn't stop it.
+  - Evict and delete only act on the exact pod that was confirmed: if a pod
+    with the same name has replaced it (a StatefulSet member), nothing is
+    done and kpiddle says so.
+  - Forbidden (403) and other API errors are shown in full.
 - Pod names, images, reasons and API errors are sanitized before display.
 - `kpiddle-gui`, a first graphical interface (GTK 4, build from source; not
   in the release tarballs yet): pods as bubbles sized by memory and colored

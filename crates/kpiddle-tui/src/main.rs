@@ -1,5 +1,5 @@
 //! kpiddle terminal front end: pods by CPU and memory, grouped by namespace
-//! and workload. Read-only.
+//! and workload. Read-only unless started with --allow-actions.
 
 mod app;
 mod text;
@@ -16,12 +16,14 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use app::App;
 
 const HELP: &str = "\
-kpiddle: Kubernetes pods by CPU and memory (read-only)
+kpiddle: Kubernetes pods by CPU and memory
 
 Usage: kpiddle [OPTIONS]
 
       --context NAME     kubeconfig context (default: the current one)
   -n, --namespace NAME   one namespace (default: all namespaces)
+      --allow-actions    allow evict, delete and rollout restart (each one
+                         asks first); without it kpiddle only reads
       --once             print one plain listing and exit
   -h, --help             show this help
   -V, --version
@@ -67,7 +69,7 @@ fn main() -> std::io::Result<()> {
         }
     }
 
-    let mut app = App::new(src.context.clone(), src.namespace.clone());
+    let mut app = App::new(src.context.clone(), src.namespace.clone(), src.actions_allowed());
     let palette = ui::Palette::detect();
     // ratatui::init installs a panic hook that restores the terminal.
     let mut terminal = ratatui::init();
@@ -75,12 +77,17 @@ fn main() -> std::io::Result<()> {
         let mut next_refresh = Instant::now();
         let mut dirty = true;
         loop {
+            if app.poll_actions() {
+                dirty = true;
+            }
             if Instant::now() >= next_refresh {
-                // Refresh quickly until the first list and poll arrive.
+                // Refresh quickly until the first list and poll arrive, and
+                // while an action runs, so its outcome shows promptly.
                 let snap = src.lock().snapshot(SystemTime::now());
                 let waiting = snap.pods_state == PodsState::Listing || snap.metrics == MetricsState::Waiting;
                 app.apply(snap);
-                next_refresh = Instant::now() + if waiting { Duration::from_millis(250) } else { REFRESH };
+                let fast = waiting || app.busy();
+                next_refresh = Instant::now() + if fast { Duration::from_millis(250) } else { REFRESH };
                 dirty = true;
             }
             if dirty {
@@ -89,7 +96,14 @@ fn main() -> std::io::Result<()> {
             }
             while event::poll(next_refresh.saturating_duration_since(Instant::now()))? {
                 match event::read()? {
-                    Event::Key(k) if k.kind == KeyEventKind::Press => app.on_key(k),
+                    Event::Key(k) if k.kind == KeyEventKind::Press => {
+                        app.on_key(k);
+                        if let Some(a) = app.take_confirmed() {
+                            let started = src.act(a.clone());
+                            app.started(&a, started);
+                            next_refresh = Instant::now();
+                        }
+                    }
                     Event::Resize(..) => {}
                     _ => continue,
                 }
@@ -116,6 +130,7 @@ fn parse_args() -> Result<Option<(Options, bool)>, String> {
             "--context" => opts.context = Some(value("--context")?),
             "-n" | "--namespace" => opts.namespace = Some(value("--namespace")?),
             "--once" => once = true,
+            "--allow-actions" => opts.allow_actions = true,
             "-h" | "--help" => {
                 println!("{HELP}");
                 return Ok(None);

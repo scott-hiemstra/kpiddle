@@ -137,6 +137,12 @@ pub struct Pod {
     pub ip: Option<Arc<str>>,
     pub created: Option<SystemTime>,
     pub containers: Vec<Container>,
+    /// A static pod: the kubelet runs it from a manifest file and the API
+    /// object is only a mirror, so deleting it through the API doesn't
+    /// stop it.
+    pub static_pod: bool,
+    /// Labeled `tier: control-plane` (kube-apiserver, etcd and so on).
+    pub control_plane: bool,
 }
 
 impl Pod {

@@ -1,11 +1,13 @@
-//! TUI state: rows for the current view, selection, search and the details
-//! popup. Rendering lives in `ui.rs`.
+//! TUI state: rows for the current view, selection, search, the details
+//! popup and action confirmations. Rendering lives in `ui.rs`.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
+use kpiddle_core::actions::{Action, Assessment, Outcome, assess};
 use kpiddle_core::model::{Metric, PodView, Snapshot, SortKey, Total, Workload, WorkloadKind};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
@@ -106,8 +108,17 @@ pub enum Mode {
     Normal,
     Search,
     Details,
+    /// Yes/no confirmation (default No).
+    Confirm(Assessment),
+    /// Risky action: the pod or workload name must be typed.
+    ConfirmTyped(Assessment, String),
     Help,
 }
+
+/// How long a status message stays in the footer; action outcomes stay
+/// longer, so a refusal can be read.
+const STATUS_FOR: Duration = Duration::from_secs(4);
+const OUTCOME_FOR: Duration = Duration::from_secs(12);
 
 pub struct App {
     pub context: String,
@@ -119,7 +130,14 @@ pub struct App {
     pub query: String,
     pub table: TableState,
     pub mode: Mode,
+    /// Footer message and when it expires.
     pub status: Option<(String, Instant)>,
+    /// Started with --allow-actions.
+    pub actions: bool,
+    /// A confirmed action for the main loop to start (see `take_confirmed`).
+    confirmed: Option<Assessment>,
+    /// Actions started and not finished yet, with what they're doing.
+    running: Vec<(String, Receiver<Outcome>)>,
     /// UID of the pod in the details popup.
     pub detail_uid: Option<Arc<str>>,
     selected_key: Option<String>,
@@ -128,7 +146,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(context: String, namespace: Option<String>) -> App {
+    pub fn new(context: String, namespace: Option<String>, actions: bool) -> App {
         App {
             context,
             namespace,
@@ -140,6 +158,9 @@ impl App {
             table: TableState::default().with_selected(Some(0)),
             mode: Mode::Normal,
             status: None,
+            actions,
+            confirmed: None,
+            running: Vec::new(),
             detail_uid: None,
             selected_key: None,
             collapsed: HashSet::new(),
@@ -153,7 +174,80 @@ impl App {
     }
 
     pub fn set_status(&mut self, s: impl Into<String>) {
-        self.status = Some((s.into(), Instant::now()));
+        self.status = Some((s.into(), Instant::now() + STATUS_FOR));
+    }
+
+    /// The action the user just confirmed, for the main loop to start.
+    pub fn take_confirmed(&mut self) -> Option<Assessment> {
+        self.confirmed.take()
+    }
+
+    /// Track an action the main loop started (or say why it couldn't).
+    pub fn started(&mut self, a: &Assessment, result: Result<Receiver<Outcome>, String>) {
+        match result {
+            Ok(rx) => {
+                let doing = format!("{} {}…", a.action.label(), a.target.describe());
+                self.status = Some((doing.clone(), Instant::now() + ACTION_WAIT));
+                self.running.push((doing, rx));
+            }
+            Err(why) => self.status = Some((why, Instant::now() + OUTCOME_FOR)),
+        }
+    }
+
+    pub fn busy(&self) -> bool {
+        !self.running.is_empty()
+    }
+
+    /// Show the outcome of any action that finished. True if one did.
+    pub fn poll_actions(&mut self) -> bool {
+        let mut changed = false;
+        self.running.retain(|(doing, rx)| match rx.try_recv() {
+            Ok(o) => {
+                let mark = if o.ok { "✓" } else { "✗" };
+                self.status = Some((format!("{mark} {}", o.message), Instant::now() + OUTCOME_FOR));
+                changed = true;
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => {
+                self.status =
+                    Some((format!("✗ {doing} lost: the cluster connection stopped."), Instant::now() + OUTCOME_FOR));
+                changed = true;
+                false
+            }
+        });
+        changed
+    }
+
+    /// Ask to run `action` on `target` (the pod in Details, or the selected
+    /// row): refused, a yes/no, or type-the-name. The caller picks the pod,
+    /// because the list selection can differ from the Details pod.
+    fn request_action(&mut self, action: Action, target: Option<PodView>) {
+        let Some(snap) = &self.snap else { return };
+        let Some(pv) = target else { return };
+        if !self.actions {
+            self.set_status("Read-only: start kpiddle with --allow-actions to evict, delete or restart.");
+            return;
+        }
+        let a = assess(snap, &pv, action);
+        if let Some(why) = &a.blocked {
+            self.status = Some((format!("Not allowed: {why}"), Instant::now() + OUTCOME_FOR));
+            return;
+        }
+        self.mode = if a.is_critical() { Mode::ConfirmTyped(a, String::new()) } else { Mode::Confirm(a) };
+    }
+
+    fn selected_pod(&self) -> Option<PodView> {
+        let snap = self.snap.as_ref()?;
+        match self.table.selected().and_then(|i| self.rows.get(i))? {
+            Row::Pod { idx, .. } => Some(snap.pods[*idx].clone()),
+            _ => None,
+        }
+    }
+
+    fn confirm(&mut self, a: Assessment) {
+        self.confirmed = Some(a);
+        self.mode = Mode::Normal;
     }
 
     /// Latest data for the pod in the details popup; `None` once it's gone.
@@ -350,9 +444,41 @@ impl App {
                 _ => self.mode = Mode::Search,
             },
             Mode::Details => match key.code {
+                KeyCode::Char(c @ ('e' | 'd' | 'r')) => match self.detail_pod().cloned() {
+                    Some(p) => {
+                        self.request_action(action_for(c), Some(p));
+                        // Refused or read-only: stay in the popup.
+                        if matches!(self.mode, Mode::Normal) {
+                            self.mode = Mode::Details;
+                        }
+                    }
+                    // Gone: keep showing the popup that says so.
+                    None => self.mode = Mode::Details,
+                },
                 KeyCode::Char('q') => self.quit = true,
                 KeyCode::Esc | KeyCode::Enter => self.detail_uid = None,
                 _ => self.mode = Mode::Details,
+            },
+            Mode::Confirm(a) => {
+                if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                    self.confirm(a);
+                } else {
+                    self.set_status("Cancelled.");
+                }
+            }
+            Mode::ConfirmTyped(a, mut typed) => match key.code {
+                KeyCode::Esc => self.set_status("Cancelled."),
+                KeyCode::Enter if typed.trim() == a.target.name() => self.confirm(a),
+                KeyCode::Enter => self.mode = Mode::ConfirmTyped(a, typed),
+                KeyCode::Backspace => {
+                    typed.pop();
+                    self.mode = Mode::ConfirmTyped(a, typed);
+                }
+                KeyCode::Char(c) => {
+                    typed.push(c);
+                    self.mode = Mode::ConfirmTyped(a, typed);
+                }
+                _ => self.mode = Mode::ConfirmTyped(a, typed),
             },
             Mode::Help => {}
             Mode::Normal => self.on_normal_key(key),
@@ -393,8 +519,23 @@ impl App {
                 self.rebuild();
                 self.set_status(format!("Sorted by {}", self.sort.name()));
             }
+            KeyCode::Char(c @ ('e' | 'd' | 'r')) => {
+                let pod = self.selected_pod();
+                self.request_action(action_for(c), pod);
+            }
             _ => {}
         }
+    }
+}
+
+/// While an action runs, its "Evicting…" line stays up until the outcome.
+const ACTION_WAIT: Duration = Duration::from_secs(60);
+
+fn action_for(key: char) -> Action {
+    match key {
+        'e' => Action::Evict,
+        'd' => Action::Delete,
+        _ => Action::RolloutRestart,
     }
 }
 
@@ -432,7 +573,7 @@ mod tests {
     }
 
     fn app_with(cluster: &Cluster) -> App {
-        let mut app = App::new("test".into(), None);
+        let mut app = App::new("test".into(), None, true);
         app.apply(cluster.snapshot(t(1)));
         app
     }
@@ -499,6 +640,114 @@ mod tests {
         let Some(Row::Pod { idx, .. }) = app.table.selected().map(|i| &app.rows[i]) else { panic!() };
         assert_eq!(&*app.snap.as_ref().unwrap().pods[*idx].pod.name, "idle-1");
         assert_eq!(app.table.selected(), Some(0));
+    }
+
+    fn key(c: KeyCode) -> KeyEvent {
+        KeyEvent::from(c)
+    }
+
+    fn type_text(app: &mut App, s: &str) {
+        for c in s.chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    /// Select a pod by name in the pods view.
+    fn select(app: &mut App, name: &str) {
+        app.switch_view(View::Pods);
+        let snap = app.snap.as_ref().unwrap();
+        let i = app.rows.iter().position(|r| matches!(r, Row::Pod { idx, .. } if &*snap.pods[*idx].pod.name == name));
+        app.table.select(i);
+    }
+
+    // Nothing here reaches a cluster: only what would be sent is checked.
+
+    #[test]
+    fn read_only_refuses_actions() {
+        let c = cluster();
+        let mut app = App::new("test".into(), None, false);
+        app.apply(c.snapshot(t(1)));
+        select(&mut app, "busy-1");
+        app.on_key(key(KeyCode::Char('e')));
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.status.as_ref().is_some_and(|(s, _)| s.contains("--allow-actions")));
+        assert!(app.take_confirmed().is_none());
+    }
+
+    #[test]
+    fn evict_asks_yes_no_and_defaults_to_no() {
+        let mut app = app_with(&cluster());
+        select(&mut app, "busy-1");
+        app.on_key(key(KeyCode::Char('e')));
+        assert!(matches!(&app.mode, Mode::Confirm(a) if a.action == Action::Evict));
+        app.on_key(key(KeyCode::Enter)); // anything but y cancels
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.take_confirmed().is_none());
+
+        app.on_key(key(KeyCode::Char('e')));
+        app.on_key(key(KeyCode::Char('y')));
+        let a = app.take_confirmed().unwrap();
+        assert_eq!(a.target.describe(), "a/busy-1");
+    }
+
+    #[test]
+    fn delete_and_bare_pods_need_the_name() {
+        let mut app = app_with(&cluster());
+        select(&mut app, "busy-1");
+        app.on_key(key(KeyCode::Char('d')));
+        assert!(matches!(app.mode, Mode::ConfirmTyped(..)));
+        type_text(&mut app, "busy");
+        app.on_key(key(KeyCode::Enter)); // wrong name: still asking
+        assert!(matches!(app.mode, Mode::ConfirmTyped(..)));
+        type_text(&mut app, "-1");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.take_confirmed().map(|a| a.action), Some(Action::Delete));
+
+        // "solo" has no controller: evicting it is permanent.
+        select(&mut app, "solo");
+        app.on_key(key(KeyCode::Char('e')));
+        assert!(matches!(app.mode, Mode::ConfirmTyped(..)));
+        app.on_key(key(KeyCode::Esc));
+        assert!(matches!(app.mode, Mode::Normal) && app.take_confirmed().is_none());
+    }
+
+    #[test]
+    fn details_actions_target_the_details_pod() {
+        let mut app = app_with(&cluster());
+        select(&mut app, "idle-1");
+        app.on_key(key(KeyCode::Enter));
+        assert!(matches!(app.mode, Mode::Details));
+        // The list selection moves; the popup still shows idle-1.
+        select(&mut app, "busy-1");
+        app.mode = Mode::Details;
+        app.on_key(key(KeyCode::Char('r')));
+        let Mode::Confirm(a) = &app.mode else { panic!("expected a confirm") };
+        assert_eq!(a.target.describe(), "a/deployment/idle");
+        // Static pods are refused in the popup, which stays open.
+        let mut c = cluster();
+        c.upsert_pod(Pod { static_pod: true, ..pod("kube-system", "etcd-cp", None) });
+        let mut app = app_with(&c);
+        select(&mut app, "etcd-cp");
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Char('e')));
+        assert!(matches!(app.mode, Mode::Details));
+        assert!(app.status.as_ref().is_some_and(|(s, _)| s.starts_with("Not allowed: Static pod")));
+    }
+
+    #[test]
+    fn outcomes_show_in_the_footer() {
+        let mut app = app_with(&cluster());
+        select(&mut app, "busy-1");
+        app.on_key(key(KeyCode::Char('e')));
+        app.on_key(key(KeyCode::Char('y')));
+        let a = app.take_confirmed().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.started(&a, Ok(rx));
+        assert!(app.busy() && !app.poll_actions());
+        assert!(app.status.as_ref().is_some_and(|(s, _)| s == "Evict a/busy-1…"));
+        tx.send(Outcome { ok: false, message: "Not evicted: a PodDisruptionBudget says no".into() }).unwrap();
+        assert!(app.poll_actions() && !app.busy());
+        assert!(app.status.as_ref().is_some_and(|(s, _)| s.starts_with("✗ Not evicted")));
     }
 
     #[test]

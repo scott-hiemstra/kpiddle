@@ -2,8 +2,9 @@
 //! where 1000m (one full core) is red. Usage that wasn't measured is never
 //! drawn as zero: it reads `—` in gray, and stale values are dimmed.
 
-use std::time::{Duration, SystemTime};
+use std::time::{Instant, SystemTime};
 
+use kpiddle_core::actions::Action;
 use kpiddle_core::model::{Measurement, MetricsState, PodView, PodsState, Resources, Total, fmt_age, fmt_cpu};
 use piddle_encode::{cpu_color, fmt_bytes};
 use ratatui::Frame;
@@ -60,14 +61,20 @@ impl Palette {
 }
 
 pub fn draw(f: &mut Frame, app: &mut App, pal: &Palette) {
+    // A long status (an action's outcome) wraps onto up to three lines.
+    let footer_h = match &app.status {
+        Some((msg, until)) if Instant::now() < *until => wrapped_lines(&format!(" {msg}"), f.area().width).clamp(1, 3),
+        _ => 1,
+    };
     let [header, body, footer] =
-        Layout::vertical([Constraint::Length(3), Constraint::Min(3), Constraint::Length(1)]).areas(f.area());
+        Layout::vertical([Constraint::Length(3), Constraint::Min(3), Constraint::Length(footer_h)]).areas(f.area());
     draw_header(f, app, pal, header);
     draw_table(f, app, pal, body);
     draw_footer(f, app, pal, footer);
     match app.mode {
         Mode::Details => draw_details(f, app, pal),
-        Mode::Help => draw_help(f, pal),
+        Mode::Confirm(..) | Mode::ConfirmTyped(..) => draw_confirm(f, app, pal),
+        Mode::Help => draw_help(f, app, pal),
         _ => {}
     }
 }
@@ -87,6 +94,10 @@ fn draw_header(f: &mut Frame, app: &App, pal: &Palette, area: Rect) {
             format!(" · {} pods · view: {} · sort: {}", s.pods.len(), app.view.name(), app.sort.name()),
             dim,
         ));
+    }
+    if app.actions {
+        title.push(Span::styled(" · ", dim));
+        title.push(Span::styled("actions on", Style::new().fg(pal.fix(BAD)).add_modifier(Modifier::BOLD)));
     }
     f.render_widget(Paragraph::new(Line::from(title)), l1);
 
@@ -312,8 +323,8 @@ fn phase_span(p: &PodView, pal: &Palette) -> Span<'static> {
 fn draw_footer(f: &mut Frame, app: &App, pal: &Palette, area: Rect) {
     let key = |k: &'static str| Span::styled(k, Style::new().fg(pal.fix(ACCENT)).add_modifier(Modifier::BOLD));
     let txt = |t: &'static str| Span::styled(t, Style::new().fg(pal.fix(DIM)));
-    let line = if let Some((msg, at)) = &app.status
-        && at.elapsed() < Duration::from_secs(4)
+    let line = if let Some((msg, until)) = &app.status
+        && Instant::now() < *until
     {
         Line::from(Span::styled(format!(" {msg}"), Style::new().fg(pal.fix(ACCENT))))
     } else if matches!(app.mode, Mode::Search) {
@@ -332,13 +343,34 @@ fn draw_footer(f: &mut Frame, app: &App, pal: &Palette, area: Rect) {
             txt(" sort  "),
             key("c"),
             txt(" collapse all  "),
+            key(if app.actions { "e r d" } else { "" }),
+            txt(if app.actions { " evict/restart/delete  " } else { "" }),
             key("?"),
             txt(" help  "),
             key("q"),
             txt(" quit"),
         ])
     };
-    f.render_widget(Paragraph::new(line), area);
+    f.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), area);
+}
+
+/// Lines `text` takes when word-wrapped to `width` columns, as Paragraph
+/// wraps it.
+fn wrapped_lines(text: &str, width: u16) -> u16 {
+    let width = width.max(1) as usize;
+    let (mut lines, mut col) = (1u16, 0usize);
+    for word in text.split(' ') {
+        let w = word.chars().count();
+        let need = if col == 0 { w } else { col + 1 + w };
+        if need <= width {
+            col = need;
+        } else {
+            lines += 1;
+            col = w % width;
+            lines += (w / width) as u16;
+        }
+    }
+    lines
 }
 
 /// Centered popup area of at most `w` x `h` cells.
@@ -443,7 +475,78 @@ fn draw_details(f: &mut Frame, app: &App, pal: &Palette) {
     f.render_widget(block, area);
     let [body, keys] = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(inner);
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
-    f.render_widget(Paragraph::new(Line::styled("Esc close · q quit", dim)), keys);
+    let hint = if app.actions {
+        Line::from(vec![
+            Span::styled("e", Style::new().fg(pal.fix(ACCENT)).add_modifier(Modifier::BOLD)),
+            Span::styled(" evict · ", dim),
+            Span::styled("r", Style::new().fg(pal.fix(ACCENT)).add_modifier(Modifier::BOLD)),
+            Span::styled(" rollout restart · ", dim),
+            Span::styled("d", Style::new().fg(pal.fix(ACCENT)).add_modifier(Modifier::BOLD)),
+            Span::styled(" delete · Esc close · q quit", dim),
+        ])
+    } else {
+        Line::styled("Esc close · q quit · read-only (start with --allow-actions for evict, restart, delete)", dim)
+    };
+    f.render_widget(Paragraph::new(hint), keys);
+}
+
+fn draw_confirm(f: &mut Frame, app: &App, pal: &Palette) {
+    let (a, typed) = match &app.mode {
+        Mode::Confirm(a) => (a, None),
+        Mode::ConfirmTyped(a, t) => (a, Some(t.as_str())),
+        _ => return,
+    };
+    let red = pal.fix(BAD);
+    let dim = Style::new().fg(pal.fix(DIM));
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!("{} {}?", a.action.label(), a.target.describe()),
+            Style::new().add_modifier(Modifier::BOLD),
+        )),
+        Line::styled(format!("context {}", app.context), dim),
+        Line::raw(""),
+    ];
+    for w in &a.warnings {
+        lines.push(Line::from(Span::styled(format!("⚠ {w}"), Style::new().fg(pal.fix(WARN)))));
+    }
+    if !a.warnings.is_empty() {
+        lines.push(Line::raw(""));
+    }
+    lines.push(Line::styled(a.effect.clone(), dim));
+    if a.action == Action::Delete {
+        lines.push(Line::styled("To restart a pod, evict (e) is the safer choice.", dim));
+    }
+    lines.push(Line::raw(""));
+    match typed {
+        None => lines.push(Line::from(vec![
+            Span::raw("Press "),
+            Span::styled("y", Style::new().fg(red).add_modifier(Modifier::BOLD)),
+            Span::raw(" to confirm, any other key to cancel."),
+        ])),
+        Some(t) => {
+            let ok = t.trim() == a.target.name();
+            lines.push(Line::from(vec![
+                Span::raw("Type "),
+                Span::styled(a.target.name().to_string(), Style::new().add_modifier(Modifier::BOLD)),
+                Span::raw(" and press Enter (Esc cancels):"),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("> ", dim),
+                Span::styled(
+                    t.to_string(),
+                    Style::new().fg(if ok { red } else { Color::Reset }).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("█", dim),
+            ]));
+        }
+    }
+    // Height includes lines that wrap inside the popup (80 wide, minus borders and padding).
+    let inner_w = 80u16.min(f.area().width.saturating_sub(2)).saturating_sub(4).max(1) as usize;
+    let rows: usize = lines.iter().map(|l| l.width().max(1).div_ceil(inner_w)).sum();
+    let area = popup(f.area(), 80, rows as u16 + 2);
+    f.render_widget(Clear, area);
+    let title = if typed.is_some() { "Careful" } else { "Confirm" };
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }).block(popup_block(title, red, pal)), area);
 }
 
 /// "100m CPU, 64.0 MiB" or "none".
@@ -455,8 +558,8 @@ fn resources(r: &Resources) -> String {
     if parts.is_empty() { "none".into() } else { parts.join(", ") }
 }
 
-fn draw_help(f: &mut Frame, pal: &Palette) {
-    let rows = [
+fn draw_help(f: &mut Frame, app: &App, pal: &Palette) {
+    let mut rows = vec![
         ("↑ ↓ PgUp PgDn Home End", "move (also j k g G)"),
         ("Enter", "pod details, or collapse / expand a group"),
         ("Space", "collapse / expand a namespace or workload"),
@@ -466,6 +569,11 @@ fn draw_help(f: &mut Frame, pal: &Palette) {
         ("s", "sort: CPU, memory, name"),
         ("q, Ctrl+C", "quit"),
     ];
+    if app.actions {
+        rows.insert(rows.len() - 1, ("e", "evict the pod (respects PodDisruptionBudgets)"));
+        rows.insert(rows.len() - 1, ("r", "rollout restart its Deployment / StatefulSet / DaemonSet"));
+        rows.insert(rows.len() - 1, ("d", "delete the pod (always type the name to confirm)"));
+    }
     let mut lines: Vec<Line> = rows
         .iter()
         .map(|(k, d)| {
@@ -481,7 +589,23 @@ fn draw_help(f: &mut Frame, pal: &Palette) {
     lines.push(Line::styled("— means no usage sample, never zero. ╌╌╌ is an unmeasured bar.", dim));
     lines.push(Line::styled("≥ marks a total missing some pods; MEASURED shows how many.", dim));
     lines.push(Line::styled("Gray italic values are stale (the age is in STATUS).", dim));
+    if !app.actions {
+        lines.push(Line::styled("Read-only. Start with --allow-actions to evict, restart or delete.", dim));
+    }
     let area = popup(f.area(), 82, lines.len() as u16 + 4);
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(lines).block(popup_block("Keys", pal.fix(ACCENT), pal)), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrapped_lines;
+
+    #[test]
+    fn wrapped_line_count() {
+        assert_eq!(wrapped_lines("short", 20), 1);
+        assert_eq!(wrapped_lines("aaaa bbbb cccc", 9), 2);
+        assert_eq!(wrapped_lines("aaaa bbbb cccc dddd", 9), 2);
+        assert_eq!(wrapped_lines("aaaa bbbb cccc dddd e", 9), 3);
+    }
 }

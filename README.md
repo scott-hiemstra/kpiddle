@@ -2,12 +2,13 @@
 
 [![CI](https://github.com/scott-hiemstra/kpiddle/actions/workflows/ci.yml/badge.svg)](https://github.com/scott-hiemstra/kpiddle/actions/workflows/ci.yml)
 
-**kpiddle** is [PIDdle](https://github.com/scott-hiemstra/piddle) for a Kubernetes cluster: pods instead of processes, grouped by namespace and workload, with the same CPU colors (1000m, one full core, is red). Version 0.1.0 is read-only: a terminal interface (`kpiddle`), and a first graphical one (`kpiddle-gui`, built from source for now). Pod actions come later (see [docs/DESIGN.md](docs/DESIGN.md)).
+**kpiddle** is [PIDdle](https://github.com/scott-hiemstra/piddle) for a Kubernetes cluster: pods instead of processes, grouped by namespace and workload, with the same CPU colors (1000m, one full core, is red). Version 0.1.0 has a terminal interface (`kpiddle`) that can also evict, restart and delete pods when you ask it to, and a first, read-only graphical one (`kpiddle-gui`, built from source for now). See [docs/DESIGN.md](docs/DESIGN.md) for where it's going.
 
 ```sh
 kpiddle                          # current kubeconfig context, all namespaces
 kpiddle --context prod -n shop   # like kubectl's --context and --namespace
 kpiddle --once                   # one plain listing, for scripts
+kpiddle --allow-actions          # also evict, restart and delete pods (each asks first)
 kpiddle-gui                      # pods as bubbles: size is memory, color is CPU
 ```
 
@@ -18,7 +19,24 @@ Usage comes from metrics.k8s.io, so the cluster needs [metrics-server](https://g
 - A total over a partly measured group is marked `≥` with its coverage, e.g. `≥ 1.4 cores · 7/10 eligible pods measured`. Only eligible pods count: running ones, plus Unknown ones on an unreachable node. Pending and finished pods have no usage to measure, and the header says how many are not running.
 - The header always shows whether metrics are OK, stale since when, or unavailable and why (no metrics-server, forbidden, no answer).
 
-kpiddle only reads (pods, ReplicaSet and Job metadata, pod metrics), so a read-only role is enough. Without permission to list pods cluster-wide, use `--namespace`.
+By default kpiddle only reads (pods, ReplicaSet and Job metadata, pod metrics), so a read-only role is enough. Without permission to list pods cluster-wide, use `--namespace`.
+
+## Actions
+
+Started with `--allow-actions`, the terminal interface can change the cluster. The header then says **actions on**. Select a pod in the list or open its details, then:
+
+| Key | Action | Confirmation |
+|---|---|---|
+| `e` | **Evict** the pod. The eviction API respects PodDisruptionBudgets, and the controller makes a replacement. This is the way to restart a pod. | yes/no, default no |
+| `r` | **Rollout restart** its Deployment, StatefulSet or DaemonSet, following the update strategy. | yes/no, default no |
+| `d` | **Delete** the pod, bypassing PodDisruptionBudgets. | always type the name |
+
+The pod or workload name must be typed for anything in `kube-system`, control-plane pods, pods with no controller (removing one is permanent) and StatefulSet pods. Static pods are refused: the kubelet runs them from a manifest, so removing one through the API doesn't stop it.
+
+- **The pod you confirmed, or nothing.** Evict and delete carry the pod's UID. If a new pod with the same name has replaced it in the meantime (as StatefulSet pods do), nothing happens and kpiddle says so.
+- **Refusals are reported, not retried.** A PodDisruptionBudget that doesn't allow the eviction, or a role that doesn't allow the action (403), is shown with the API's reason. RBAC remains the real gate; kpiddle never works around it.
+
+Evicting needs `create` on `pods/eviction`, deleting needs `delete` on `pods`, and a rollout restart needs `patch` on the workload.
 
 ## Install
 
@@ -49,12 +67,13 @@ The bubble scene, the color and size encodings and the GTK canvas come from [pid
 ```
 crates/
   kpiddle-core/     kpiddle's data, UI-independent
+    actions.rs      evict / delete / rollout restart: risk assessment and the API calls
     model.rs        pods + metrics samples → snapshots (fresh / stale / missing usage, totals with coverage)
     source.rs       kube-rs: watch pods, ReplicaSets and Jobs; poll metrics.k8s.io
     quantity.rs     Kubernetes quantities ("250m", "128Mi") as numbers
     tests/          acceptance tests for missing and stale metrics, against a fake metrics source
   kpiddle-tui/      Ratatui interface (binary `kpiddle`)
-    app.rs          state, views, search, keys
+    app.rs          state, views, search, keys, confirm flows
     ui.rs           rendering
     text.rs         the --once listing
     main.rs         arguments and event loop
