@@ -21,6 +21,9 @@ published as its release notes, and a release fails if it is missing.
   and `kpiddle-gui` (the GTK interface with a menu entry), as .deb, .rpm
   and Arch packages. Each installs on its own; neither requires the other.
   The static `kpiddle` tarballs are still published.
+- A signed package repository on GitHub Pages,
+  <https://scott-hiemstra.github.io/kpiddle/>, for apt, dnf and pacman,
+  updated by each release.
 
 ### Changed
 - A static pod's owner reads "a static pod, run by the kubelet on NODE"

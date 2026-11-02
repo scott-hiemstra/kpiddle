@@ -48,7 +48,13 @@ Each release has packages for x86_64 and ARM64 Linux. The two packages are indep
 | `kpiddle` | the terminal interface, a static binary | nothing |
 | `kpiddle-gui` | the graphical interface and its menu entry | GTK 4.14 or newer (Ubuntu 24.04, Fedora 40, current Arch) |
 
-Install the downloaded files with the package manager, so the GTK dependencies come along:
+The easiest way is the **[package repository](https://scott-hiemstra.github.io/kpiddle/)** for apt, dnf and pacman: set it up once with a few commands, and updates arrive with your normal system updates. It is signed with this key, the same one as PIDdle's:
+
+```
+CDC7 835A 1155 6B6D BD74  08E0 D4E5 629D 1E38 47D0   PIDdle packages <scott@hiemstra.us>
+```
+
+Or download the files from the [latest release](https://github.com/scott-hiemstra/kpiddle/releases/latest) and install them with the package manager, so the GTK dependencies come along:
 
 ```sh
 sudo apt install ./kpiddle_*.deb ./kpiddle-gui_*.deb        # Debian, Ubuntu
@@ -61,6 +67,8 @@ There is also a static `kpiddle` tarball (`.tar.gz` with `.sha256`) that runs on
 ## Release
 
 Add each change to the Unreleased section of [CHANGELOG.md](CHANGELOG.md) as it lands. To release, bump `version` in the three `crates/*/Cargo.toml`, date the section, and push a `vX.Y.Z` tag. The **Release** workflow checks the tag against `crates/kpiddle-tui/Cargo.toml`, builds the tarballs and packages and publishes them with that section as the notes. Check the notes locally with `scripts/release-notes.sh 0.1.0`. Running the workflow by hand builds everything as artifacts and publishes nothing.
+
+After publishing, the workflow updates the package repository on GitHub Pages (`.github/workflows/pages.yml`, which can also be run by hand to republish). It signs the RPMs and the apt, dnf and pacman metadata with the `PACKAGES_GPG_KEY` secret, which must match `packaging/signing-key.asc`. The repository carries the latest release only.
 
 Build the packages locally with `packaging/build-deb.sh`, `packaging/build-rpm.sh` (needs `rpmbuild`) or `packaging/build-arch.sh` (needs `makepkg`). They land in `target/debian`, `target/rpm` and `target/arch`.
 
