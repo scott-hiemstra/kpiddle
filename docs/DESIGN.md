@@ -191,4 +191,17 @@ and display logic can be checked without a cluster:
 - stale: values carry their age and the header says stale since when;
 - recovery: when fresh samples return, the stale and partial marks clear.
 
-The GUI bubbles come next, then actions with the safety tiers.
+The GUI bubbles came next, then actions with the safety tiers: all of
+this shipped in 0.1.0 (TUI with actions) and 0.2.0 (GUI details and
+actions, packages, a signed package repository).
+
+## Next
+
+1. **Requests/limits mode** for clusters without metrics-server, as designed
+   above: a labeled mode with gray CPU color, never a silent substitute for
+   usage. Both interfaces now only say it's planned.
+2. **One bubble per workload** in kpiddle-gui, expanding into its pods on
+   click, so big clusters stay readable (see Scale above).
+3. **Details: events, restart history, last termination reason, and logs**
+   (`pods/log`, sanitized), as in the details panel design above.
+4. **AUR packages** next to the pacman repository; needs an AUR account.
