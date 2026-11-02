@@ -1,7 +1,8 @@
 # kpiddle: PIDdle for Kubernetes
 
-Status: the TUI (with actions behind `--allow-actions`) and a first,
-read-only GUI are released as kpiddle 0.1.0 (2026-11-01). The sections below are the original design; the code follows it
+Status: kpiddle 0.2.0 (2026-11-01) has the TUI and the GUI, both with pod
+details and with evict, rollout restart and delete behind `--allow-actions`,
+packaged for Debian, Fedora and Arch. The sections below are the original design; the code follows it
 except where noted in [CHANGELOG.md](../CHANGELOG.md).
 
 Update, 2026-11-01: kpiddle has since moved to its own repo, as anticipated

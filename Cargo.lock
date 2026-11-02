@@ -1450,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "kpiddle-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "k8s-openapi",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "kpiddle-gui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gtk4",
  "kpiddle-core",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "kpiddle-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kpiddle-core",
  "piddle-encode",

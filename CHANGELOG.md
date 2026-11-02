@@ -3,7 +3,18 @@
 Notable changes in each kpiddle release. The section for a version is
 published as its release notes, and a release fails if it is missing.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-01
+
+The graphical interface can now show a pod's details and, when started with
+`--allow-actions`, evict, restart or delete it, with the terminal
+interface's safety rules. Both interfaces are now packaged for Debian,
+Fedora and Arch, and published in a signed package repository.
+
+![kpiddle-gui: pods as bubbles, sized by memory and colored by CPU](https://raw.githubusercontent.com/scott-hiemstra/kpiddle/v0.2.0/docs/screenshots/kpiddle-gui.png)
+
+![A pod's details window, with actions on](https://raw.githubusercontent.com/scott-hiemstra/kpiddle/v0.2.0/docs/screenshots/kpiddle-gui-details.png)
+
+![Deleting a StatefulSet pod needs its name typed](https://raw.githubusercontent.com/scott-hiemstra/kpiddle/v0.2.0/docs/screenshots/kpiddle-gui-confirm.png)
 
 ### Added
 - kpiddle-gui: click a pod to open its details window: status, CPU and

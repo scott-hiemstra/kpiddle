@@ -2,7 +2,13 @@
 
 [![CI](https://github.com/scott-hiemstra/kpiddle/actions/workflows/ci.yml/badge.svg)](https://github.com/scott-hiemstra/kpiddle/actions/workflows/ci.yml)
 
-**kpiddle** is [PIDdle](https://github.com/scott-hiemstra/piddle) for a Kubernetes cluster: pods instead of processes, grouped by namespace and workload, with the same CPU colors (1000m, one full core, is red). Version 0.1.0 has a terminal interface (`kpiddle`) that can also evict, restart and delete pods when you ask it to, and a graphical one (`kpiddle-gui`) where clicking a pod opens its details. See [docs/DESIGN.md](docs/DESIGN.md) for where it's going.
+**kpiddle** is [PIDdle](https://github.com/scott-hiemstra/piddle) for a Kubernetes cluster: pods instead of processes, grouped by namespace and workload, with the same CPU colors (1000m, one full core, is red). Version 0.2.0 has a terminal interface (`kpiddle`) that can also evict, restart and delete pods when you ask it to, and a graphical one (`kpiddle-gui`) where clicking a pod opens its details. See [docs/DESIGN.md](docs/DESIGN.md) for where it's going.
+
+![kpiddle-gui: pods as bubbles, sized by memory and colored by CPU](docs/screenshots/kpiddle-gui.png)
+
+| A pod's details, with `--allow-actions` | Risky actions need the name typed |
+|---|---|
+| ![Pod details window](docs/screenshots/kpiddle-gui-details.png) | ![Type-the-name confirmation](docs/screenshots/kpiddle-gui-confirm.png) |
 
 ```sh
 kpiddle                          # current kubeconfig context, all namespaces
@@ -66,7 +72,7 @@ There is also a static `kpiddle` tarball (`.tar.gz` with `.sha256`) that runs on
 
 ## Release
 
-Add each change to the Unreleased section of [CHANGELOG.md](CHANGELOG.md) as it lands. To release, bump `version` in the three `crates/*/Cargo.toml`, date the section, and push a `vX.Y.Z` tag. The **Release** workflow checks the tag against `crates/kpiddle-tui/Cargo.toml`, builds the tarballs and packages and publishes them with that section as the notes. Check the notes locally with `scripts/release-notes.sh 0.1.0`. Running the workflow by hand builds everything as artifacts and publishes nothing.
+Add each change to the Unreleased section of [CHANGELOG.md](CHANGELOG.md) as it lands. To release, bump `version` in the three `crates/*/Cargo.toml`, date the section, and push a `vX.Y.Z` tag. The **Release** workflow checks the tag against `crates/kpiddle-tui/Cargo.toml`, builds the tarballs and packages and publishes them with that section as the notes. Check the notes locally with `scripts/release-notes.sh 0.2.0`. Running the workflow by hand builds everything as artifacts and publishes nothing.
 
 After publishing, the workflow updates the package repository on GitHub Pages (`.github/workflows/pages.yml`, which can also be run by hand to republish). It signs the RPMs and the apt, dnf and pacman metadata with the `PACKAGES_GPG_KEY` secret, which must match `packaging/signing-key.asc`. The repository carries the latest release only.
 
