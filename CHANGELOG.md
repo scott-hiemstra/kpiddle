@@ -14,7 +14,8 @@ published as its release notes, and a release fails if it is missing.
   committed as is.
 - `scripts/use-local-common.sh` manages only its own marked block in
   `.cargo/config.toml` instead of overwriting or deleting the whole file,
-  and refuses to add a second piddle-common patch table.
+  and refuses to add a second piddle-common patch table. A config written
+  by its old version is taken over only if nothing was added to it since.
 
 ## [0.2.0] - 2026-11-01
 
