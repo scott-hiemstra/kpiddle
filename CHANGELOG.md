@@ -12,6 +12,9 @@ published as its release notes, and a release fails if it is missing.
 - `scripts/use-local-common.sh off` restores Cargo.lock to the pinned
   piddle-common commit, so a lockfile changed while patched can be
   committed as is.
+- `scripts/use-local-common.sh` manages only its own marked block in
+  `.cargo/config.toml` instead of overwriting or deleting the whole file,
+  and refuses to add a second piddle-common patch table.
 
 ## [0.2.0] - 2026-11-01
 
