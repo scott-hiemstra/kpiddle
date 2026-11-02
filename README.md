@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/scott-hiemstra/kpiddle/actions/workflows/ci.yml/badge.svg)](https://github.com/scott-hiemstra/kpiddle/actions/workflows/ci.yml)
 
-**kpiddle** is [PIDdle](https://github.com/scott-hiemstra/piddle) for a Kubernetes cluster: pods instead of processes, grouped by namespace and workload, with the same CPU colors (1000m, one full core, is red). Version 0.1.0 has a terminal interface (`kpiddle`) that can also evict, restart and delete pods when you ask it to, and a graphical one (`kpiddle-gui`, built from source for now) where clicking a pod opens its details. See [docs/DESIGN.md](docs/DESIGN.md) for where it's going.
+**kpiddle** is [PIDdle](https://github.com/scott-hiemstra/piddle) for a Kubernetes cluster: pods instead of processes, grouped by namespace and workload, with the same CPU colors (1000m, one full core, is red). Version 0.1.0 has a terminal interface (`kpiddle`) that can also evict, restart and delete pods when you ask it to, and a graphical one (`kpiddle-gui`) where clicking a pod opens its details. See [docs/DESIGN.md](docs/DESIGN.md) for where it's going.
 
 ```sh
 kpiddle                          # current kubeconfig context, all namespaces
@@ -41,11 +41,28 @@ Evicting needs `create` on `pods/eviction`, deleting needs `delete` on `pods`, a
 
 ## Install
 
-Each release has static `kpiddle` binaries for x86_64 and ARM64 Linux (`.tar.gz` with `.sha256`), which run on any distribution. `kpiddle-gui` is built from source for now.
+Each release has packages for x86_64 and ARM64 Linux. The two packages are independent; install either or both.
+
+| Package | Contains | Needs |
+|---|---|---|
+| `kpiddle` | the terminal interface, a static binary | nothing |
+| `kpiddle-gui` | the graphical interface and its menu entry | GTK 4.14 or newer (Ubuntu 24.04, Fedora 40, current Arch) |
+
+Install the downloaded files with the package manager, so the GTK dependencies come along:
+
+```sh
+sudo apt install ./kpiddle_*.deb ./kpiddle-gui_*.deb        # Debian, Ubuntu
+sudo dnf install ./kpiddle-*.rpm                             # Fedora, RHEL
+sudo pacman -U kpiddle-*.pkg.tar.zst                         # Arch
+```
+
+There is also a static `kpiddle` tarball (`.tar.gz` with `.sha256`) that runs on any distribution: unpack it and put `kpiddle` on your `PATH`.
 
 ## Release
 
-Add each change to the Unreleased section of [CHANGELOG.md](CHANGELOG.md) as it lands. To release, bump `version` in the three `crates/*/Cargo.toml`, date the section, and push a `vX.Y.Z` tag. The **Release** workflow checks the tag against `crates/kpiddle-tui/Cargo.toml`, builds the static binaries and publishes them with that section as the notes. Check the notes locally with `scripts/release-notes.sh 0.1.0`. Running the workflow by hand builds the tarballs as artifacts and publishes nothing.
+Add each change to the Unreleased section of [CHANGELOG.md](CHANGELOG.md) as it lands. To release, bump `version` in the three `crates/*/Cargo.toml`, date the section, and push a `vX.Y.Z` tag. The **Release** workflow checks the tag against `crates/kpiddle-tui/Cargo.toml`, builds the tarballs and packages and publishes them with that section as the notes. Check the notes locally with `scripts/release-notes.sh 0.1.0`. Running the workflow by hand builds everything as artifacts and publishes nothing.
+
+Build the packages locally with `packaging/build-deb.sh`, `packaging/build-rpm.sh` (needs `rpmbuild`) or `packaging/build-arch.sh` (needs `makepkg`). They land in `target/debian`, `target/rpm` and `target/arch`.
 
 ## Build and run from source
 

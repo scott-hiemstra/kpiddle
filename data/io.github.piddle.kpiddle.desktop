@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=kpiddle
+GenericName=Kubernetes pod viewer
+Comment=Kubernetes pods as bubbles: sized by memory, colored by CPU
+Exec=kpiddle-gui
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;GTK;
+Keywords=kubernetes;k8s;pod;cluster;cpu;memory;
+StartupWMClass=io.github.piddle.kpiddle

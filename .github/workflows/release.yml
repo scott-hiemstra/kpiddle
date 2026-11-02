@@ -1,10 +1,12 @@
 name: Release
 
-# Push a tag like v0.1.0 to build static kpiddle binaries for x86_64 and
-# aarch64 and publish them as a GitHub release. The version is in
-# crates/kpiddle-tui/Cargo.toml and the notes in CHANGELOG.md.
-# Run it manually to build the tarballs as workflow artifacts without
-# publishing anything.
+# Push a tag like v0.2.0 to build kpiddle for x86_64 and aarch64 and publish
+# a GitHub release with:
+#   - static kpiddle tarballs, for any distribution;
+#   - kpiddle and kpiddle-gui packages (.deb, .rpm, Arch).
+# The version is in crates/kpiddle-tui/Cargo.toml (every crate carries the
+# same one) and the notes in CHANGELOG.md. Run it manually to build
+# everything as workflow artifacts without publishing anything.
 on:
   push:
     tags: ['v*']
@@ -17,7 +19,7 @@ permissions:
 
 jobs:
   build:
-    name: Static binary (${{ matrix.arch }})
+    name: Binaries, tarball, .deb and .rpm (${{ matrix.arch }})
     strategy:
       matrix:
         include:
@@ -43,11 +45,12 @@ jobs:
           }
 
       # ring (TLS for kube-rs) compiles C, which needs musl-gcc for the
-      # static build. No GTK: nothing in kpiddle links it.
+      # static build. GTK is for kpiddle-gui only; Ubuntu 24.04 ships 4.14,
+      # the minimum it supports.
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
+          sudo apt-get install -y --no-install-recommends musl-tools libgtk-4-dev dpkg-dev fakeroot rpm
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
         with:
@@ -59,12 +62,16 @@ jobs:
           key: release-${{ matrix.arch }}
 
       - name: Test
-        run: cargo test --locked -p kpiddle-core -p kpiddle-tui
+        run: cargo test --locked --workspace
 
-      - name: Build
-        run: cargo build --release --locked --target ${{ matrix.arch }}-unknown-linux-musl -p kpiddle-tui
+      # Builds the static kpiddle and kpiddle-gui, then packages them.
+      - name: Build .deb
+        run: packaging/build-deb.sh
 
-      - name: Package
+      - name: Build .rpm
+        run: KPIDDLE_SKIP_BUILD=1 packaging/build-rpm.sh
+
+      - name: Tarball
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/kpiddle-tui/Cargo.toml | head -1)
           bin=target/${{ matrix.arch }}-unknown-linux-musl/release/kpiddle
@@ -81,16 +88,62 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: kpiddle-${{ matrix.arch }}
+          name: kpiddle-dist-${{ matrix.arch }}
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            target/debian/*.deb
+            target/rpm/*.rpm
+          if-no-files-found: error
+
+      # For the Arch job, which packages these same binaries.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kpiddle-binaries-${{ matrix.arch }}
+          path: |
+            target/release/kpiddle-gui
+            target/${{ matrix.arch }}-unknown-linux-musl/release/kpiddle
+          if-no-files-found: error
+
+  arch:
+    name: Arch packages (${{ matrix.arch }})
+    needs: build
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: ubuntu-24.04
+    # Ubuntu has no makepkg, so package the binaries inside Arch Linux.
+    # Packaging only copies files, so the aarch64 package is made here too.
+    container: archlinux:latest
+    steps:
+      - name: Install makepkg
+        run: pacman -Syu --noconfirm --needed base-devel
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: kpiddle-binaries-${{ matrix.arch }}
+          path: target
+
+      - name: Build Arch packages
+        # makepkg refuses to run as root.
+        run: |
+          chmod +x target/release/kpiddle-gui target/${{ matrix.arch }}-unknown-linux-musl/release/kpiddle
+          useradd -m builder
+          chown -R builder .
+          su builder -c 'KPIDDLE_SKIP_BUILD=1 KPIDDLE_ARCH=${{ matrix.arch }} packaging/build-arch.sh'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kpiddle-arch-${{ matrix.arch }}
+          path: target/arch/*.pkg.tar.zst
           if-no-files-found: error
 
   publish:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    needs: [build, arch]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -99,7 +152,13 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: kpiddle-*
+          pattern: kpiddle-dist-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: kpiddle-arch-*
           path: dist
           merge-multiple: true
 
@@ -107,11 +166,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls -la dist
+          ls -laR dist
           version=${GITHUB_REF_NAME#v}
           scripts/release-notes.sh "$version" > notes.md
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "kpiddle $version" \
             --notes-file notes.md \
-            dist/*.tar.gz dist/*.sha256
+            dist/dist/*.tar.gz dist/dist/*.sha256 \
+            dist/target/debian/*.deb dist/target/rpm/*.rpm dist/*.pkg.tar.zst

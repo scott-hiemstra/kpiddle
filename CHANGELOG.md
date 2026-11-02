@@ -17,6 +17,10 @@ published as its release notes, and a release fails if it is missing.
   ask in a dialog that defaults to Cancel. Failures, such as a
   PodDisruptionBudget refusal, are shown in the window and in a dialog. The
   banner says whether actions are on.
+- Packages for x86_64 and ARM64: `kpiddle` (the static terminal interface)
+  and `kpiddle-gui` (the GTK interface with a menu entry), as .deb, .rpm
+  and Arch packages. Each installs on its own; neither requires the other.
+  The static `kpiddle` tarballs are still published.
 
 ### Changed
 - A static pod's owner reads "a static pod, run by the kubelet on NODE"
