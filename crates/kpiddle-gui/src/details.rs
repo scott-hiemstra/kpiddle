@@ -22,6 +22,7 @@ use kpiddle_core::actions::{Action, Assessment, Outcome, assess};
 use kpiddle_core::model::{Measurement, Phase, PodView, fmt_age};
 use kpiddle_core::source::Source;
 use piddle_encode::{cpu_color, fmt_bytes};
+use piddle_gtk::details::{self, set_text as set, stat_card};
 use piddle_gtk::draw::glib_escape;
 
 use crate::view::View;
@@ -41,24 +42,8 @@ enum Badge {
 pub fn open(parent: &gtk::ApplicationWindow, view: &Rc<RefCell<View>>, src: &Rc<Source>, uid: Arc<str>) {
     let Some(first) = pod(view, &uid) else { return };
 
-    let header = gtk::HeaderBar::new();
-    let title = gtk::Label::new(Some("Pod details"));
-    title.add_css_class("title");
-    header.set_title_widget(Some(&title));
-
-    let win = gtk::Window::builder()
-        .title(format!("{} — {}", first.pod.name, first.pod.namespace))
-        .transient_for(parent)
-        .default_width(680)
-        .titlebar(&header)
-        .build();
-    win.add_css_class("details");
-
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 16);
-    root.set_margin_top(18);
-    root.set_margin_bottom(18);
-    root.set_margin_start(20);
-    root.set_margin_end(20);
+    let title = format!("{} — {}", first.pod.name, first.pod.namespace);
+    let (win, root) = details::window(parent, "Pod details", &title, 680);
 
     // ---- identity: CPU-colored badge, name, subtitle, status
     let badge_state = Rc::new(Cell::new(Badge::Hollow));
@@ -171,7 +156,6 @@ pub fn open(parent: &gtk::ApplicationWindow, view: &Rc<RefCell<View>>, src: &Rc<
     footer.append(&restart);
     footer.append(&delete);
     root.append(&footer);
-    win.set_child(Some(&root));
 
     let buttons = [(Action::Evict, evict), (Action::RolloutRestart, restart), (Action::Delete, delete)];
     let allowed = src.actions_allowed();
@@ -339,19 +323,6 @@ pub fn open(parent: &gtk::ApplicationWindow, view: &Rc<RefCell<View>>, src: &Rc<
         ));
     }
 
-    // Escape closes the window, like other GTK dialogs.
-    let esc = gtk::ShortcutController::new();
-    esc.set_propagation_phase(gtk::PropagationPhase::Capture);
-    esc.add_shortcut(gtk::Shortcut::new(
-        Some(gtk::KeyvalTrigger::new(gtk::gdk::Key::Escape, gtk::gdk::ModifierType::empty())),
-        Some(gtk::CallbackAction::new(|w, _| {
-            if let Some(w) = w.downcast_ref::<gtk::Window>() {
-                w.close();
-            }
-            glib::Propagation::Stop
-        })),
-    ));
-    win.add_controller(esc);
     win.present();
     // Nothing focused: not the selectable name (it would show a cursor),
     // and not an action button that Enter would press.
@@ -433,7 +404,19 @@ fn confirm(parent: &gtk::Window, context: &str, a: Assessment, on_confirm: impl 
         detail.push_str("\n\nTo restart a pod, Evict is the safer choice.");
     }
     if a.is_critical() {
-        confirm_typed(parent, &a, &detail, on_confirm);
+        let heading = format!("{} {}?", a.action.label(), a.target.describe());
+        let warning = a.warnings.iter().map(|w| format!("⚠  {w}")).collect::<Vec<_>>().join("\n\n");
+        let name = a.target.name().to_string();
+        let c = details::TypedConfirm {
+            title: "Careful",
+            heading: &heading,
+            warning: &warning,
+            detail: &detail,
+            name: &name,
+            verb: a.action.label(),
+            placeholder: "name",
+        };
+        details::confirm_typed(parent, c, move || on_confirm(a.clone()));
         return;
     }
     let verb = a.action.label();
@@ -450,106 +433,6 @@ fn confirm(parent: &gtk::Window, context: &str, a: Assessment, on_confirm: impl 
             on_confirm(a);
         }
     });
-}
-
-/// The stronger confirmation: the action's button stays disabled until the
-/// pod (or workload) name is typed.
-fn confirm_typed(parent: &gtk::Window, a: &Assessment, detail: &str, on_confirm: impl Fn(Assessment) + 'static) {
-    let verb = a.action.label();
-    let dlg = gtk::Window::builder().transient_for(parent).modal(true).resizable(false).title(verb).build();
-    dlg.add_css_class("details");
-    dlg.add_css_class("confirm");
-    let header = gtk::HeaderBar::new();
-    header.set_show_title_buttons(false);
-    let t = gtk::Label::new(Some("Careful"));
-    t.add_css_class("title");
-    header.set_title_widget(Some(&t));
-    dlg.set_titlebar(Some(&header));
-
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    root.set_margin_top(18);
-    root.set_margin_bottom(18);
-    root.set_margin_start(20);
-    root.set_margin_end(20);
-    let wrapped = |text: &str| {
-        gtk::Label::builder().label(text).xalign(0.0).wrap(true).width_chars(44).max_width_chars(60).build()
-    };
-    let heading = wrapped(&format!("{verb} {}?", a.target.describe()));
-    heading.add_css_class("confirm-heading");
-    root.append(&heading);
-    let warn = wrapped(&a.warnings.iter().map(|w| format!("⚠  {w}")).collect::<Vec<_>>().join("\n\n"));
-    warn.add_css_class("risk-banner");
-    root.append(&warn);
-    let det = wrapped(detail.trim());
-    det.add_css_class("card-sub");
-    root.append(&det);
-    let name = a.target.name().to_string();
-    let prompt = gtk::Label::builder().xalign(0.0).build();
-    prompt.set_markup(&format!("Type <b>{}</b> to confirm:", glib_escape(&name)));
-    root.append(&prompt);
-    let entry = gtk::Entry::builder().placeholder_text("name").build();
-    entry.add_css_class("confirm-entry");
-    root.append(&entry);
-
-    let cancel = gtk::Button::with_label("Cancel");
-    cancel.add_css_class("action");
-    let go = gtk::Button::with_label(verb);
-    go.add_css_class("action");
-    go.add_css_class("destructive-action");
-    go.set_sensitive(false);
-    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    buttons.set_halign(gtk::Align::End);
-    buttons.set_margin_top(6);
-    buttons.append(&cancel);
-    buttons.append(&go);
-    root.append(&buttons);
-    dlg.set_child(Some(&root));
-
-    entry.connect_changed(glib::clone!(
-        #[weak]
-        go,
-        move |e| go.set_sensitive(e.text().trim() == name)
-    ));
-    entry.connect_activate(glib::clone!(
-        #[weak]
-        go,
-        move |_| {
-            if go.is_sensitive() {
-                go.emit_clicked();
-            }
-        }
-    ));
-    cancel.connect_clicked(glib::clone!(
-        #[weak]
-        dlg,
-        move |_| dlg.close()
-    ));
-    let a = a.clone();
-    go.connect_clicked(glib::clone!(
-        #[weak]
-        dlg,
-        move |_| {
-            dlg.close();
-            on_confirm(a.clone());
-        }
-    ));
-    let esc = gtk::EventControllerKey::new();
-    esc.connect_key_pressed(glib::clone!(
-        #[weak]
-        dlg,
-        #[upgrade_or]
-        glib::Propagation::Proceed,
-        move |_, key, _, _| {
-            if key == gtk::gdk::Key::Escape {
-                dlg.close();
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
-        }
-    ));
-    dlg.add_controller(esc);
-    dlg.present();
-    entry.grab_focus();
 }
 
 /// The memory card's caption: usage against the pod's memory limit when
@@ -644,29 +527,6 @@ fn draw_badge(cr: &gtk::cairo::Context, w: f64, h: f64, b: Badge) {
     let _ = cr.set_source(&g);
     cr.arc(cx, cy, r, 0.0, TAU);
     let _ = cr.fill();
-}
-
-/// Adds a stat card to `row` and returns its (value, caption) labels.
-fn stat_card(row: &gtk::Box, title: &str) -> (gtk::Label, gtk::Label) {
-    let card = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    card.add_css_class("details-card");
-    let t = gtk::Label::builder().label(title).xalign(0.0).build();
-    t.add_css_class("card-label");
-    let v = gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build();
-    v.add_css_class("big-num");
-    let s = gtk::Label::builder().xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build();
-    s.add_css_class("card-sub");
-    card.append(&t);
-    card.append(&v);
-    card.append(&s);
-    row.append(&card);
-    (v, s)
-}
-
-fn set(label: &gtk::Label, text: &str) {
-    if label.text() != text {
-        label.set_text(text);
-    }
 }
 
 fn set_markup(label: &gtk::Label, markup: &str) {

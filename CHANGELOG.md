@@ -3,6 +3,16 @@
 Notable changes in each kpiddle release. The section for a version is
 published as its release notes, and a release fails if it is missing.
 
+## [Unreleased]
+
+### Changed
+- kpiddle-gui's details window and type-the-name confirmation now use
+  piddle-common 0.1.1's shared `piddle_gtk::details`, like PIDdle's. No
+  visible change.
+- `scripts/use-local-common.sh off` restores Cargo.lock to the pinned
+  piddle-common commit, so a lockfile changed while patched can be
+  committed as is.
+
 ## [0.2.0] - 2026-11-01
 
 The graphical interface can now show a pod's details and, when started with

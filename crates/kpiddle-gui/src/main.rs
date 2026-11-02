@@ -71,36 +71,7 @@ popover row:selected, popover row:hover { background: rgba(59,130,246,0.25); }
 tooltip, tooltip.background { background: #232834; color: #e6e9ef; }
 scrollbar, scrollbar trough { background: transparent; }
 scrollbar slider { background: rgba(255,255,255,0.18); min-width: 6px; min-height: 6px; border-radius: 3px; margin: 0; border: none; }
-window.details, .details { background: #0f1218; color: #e6e9ef; }
-.details headerbar { background: #0f1218; border-bottom: 1px solid rgba(255,255,255,0.05); }
-headerbar .title { font-weight: 800; letter-spacing: 0.5px; }
-.details-title { font-size: 21px; font-weight: 800; }
-.details-subtitle { color: rgba(200,210,230,0.65); }
-.pill { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.10); border-radius: 999px;
-  padding: 3px 10px; font-size: 11px; font-weight: 600; color: rgba(220,226,238,0.9); }
-.pill.pill-bad { background: rgba(240,90,90,0.14); border-color: rgba(240,90,90,0.45); color: #f6a3a3; }
-.details-card { background: #161a22; border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 12px 14px; }
-.card-label { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: rgba(158,173,204,0.9); }
-.card-sub { font-size: 11px; color: rgba(200,210,230,0.55); }
-.big-num { font-size: 22px; font-weight: 800; font-feature-settings: "tnum"; margin-top: 2px; }
-.info-key { color: rgba(200,210,230,0.55); }
-.info-val { color: #e6e9ef; }
-.cmdline-box { background: #0a0c11; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; }
 .containers { font-size: 12px; color: #c9d4e5; padding: 8px 10px; }
-.details-status { color: rgba(200,210,230,0.7); font-size: 12px; }
-.details-status.status-bad { color: #f6a3a3; }
-button.action { background: #1d222c; color: #e6e9ef; border: 1px solid rgba(255,255,255,0.12); border-radius: 8px;
-  padding: 6px 16px; box-shadow: none; margin: 0; }
-button.action:hover { background: #272d3a; }
-button.action.destructive-action { background: #b3261e; border-color: #c9372d; color: #ffffff; }
-button.action.destructive-action:hover { background: #c9372d; }
-button.action:disabled { opacity: 0.4; }
-.risk-banner { background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.35); border-radius: 8px;
-  padding: 9px 12px; color: #f5c56b; }
-.confirm-heading { font-size: 16px; font-weight: 800; }
-.confirm-entry { background: #0a0c11; color: #e6e9ef; border: 1px solid rgba(255,255,255,0.15); border-radius: 7px; min-height: 30px; }
-.confirm-entry:focus-within { border-color: #c9372d; }
-.confirm-entry text placeholder { color: rgba(230,233,239,0.3); font-style: italic; }
 "#;
 
 struct Args {
@@ -170,6 +141,8 @@ fn main() -> glib::ExitCode {
         let provider = gtk::CssProvider::new();
         provider.load_from_string(CSS);
         if let Some(display) = gdk::Display::default() {
+            // Shared details-window styles first, so kpiddle's own rules win.
+            piddle_gtk::details::add_css(&display);
             gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_USER + 1);
         }
         if let Some(settings) = gtk::Settings::default() {
