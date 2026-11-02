@@ -6,12 +6,16 @@ published as its release notes, and a release fails if it is missing.
 ## [Unreleased]
 
 ### Changed
+- `scripts/use-local-common.sh` is now a thin wrapper around piddle-common's
+  own copy, the only one; it finds the checkout via a path after `on`,
+  `$PIDDLE_COMMON` or `../piddle-common`, and says how to undo the block by
+  hand if there is none.
 - kpiddle-gui's details window and type-the-name confirmation now use
   piddle-common 0.1.1's shared `piddle_gtk::details`, like PIDdle's. No
   visible change.
-- `scripts/use-local-common.sh off` restores Cargo.lock to the pinned
-  piddle-common commit, so a lockfile changed while patched can be
-  committed as is.
+- `scripts/use-local-common.sh off` re-resolves Cargo.lock against the
+  pinned piddle-common commit, putting back the git source that patching
+  removes.
 - `scripts/use-local-common.sh` manages only its own marked block in
   `.cargo/config.toml` instead of overwriting or deleting the whole file,
   and refuses to add a second piddle-common patch table. A config written
